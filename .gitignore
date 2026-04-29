@@ -1,0 +1,61 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---------- Virtual envs ----------
+.venv/
+venv/
+env/
+ENV/
+
+# ---------- Node ----------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ---------- macOS ----------
+.DS_Store
+
+# ---------- Editor ----------
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ---------- Palette pipeline outputs (per-run, large, not source) ----------
+deck_forge/sessions/
+deck_forge/probe_outputs/
+deck_forge/probe_outputs_*/
+deck_forge/deck.pptx
+deck_forge/_runner.js
+
+# ---------- Recovery / disaster artifacts ----------
+deck_forge/tools.py.recovered
+deck_forge/tools.py.bak
+deck_forge/*.bak
+/tmp/tools.py.*
+
+# ---------- Local secrets / env ----------
+.env
+.env.local
+*.pem
+*.key
+
+# ---------- Large reference decks (keep .js source, skip rendered .pptx) ----------
+# The Claude reference .pptx files are useful but heavy; commit if you want
+# them for parity testing, otherwise they're regeneratable from the .js files.
+# Uncomment the next two lines to skip them:
+# deck_forge/ai_soc_series_a_pitch.pptx
+# deck_forge/decoder_only_transformers.pptx
+# deck_forge/vector_databases_for_backend_engineers.pptx
+# deck_forge/watsonx_orchestrate_q1_2026_marketing_strategy.pptx
