@@ -1,0 +1,7 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.5
+httpx>=0.27
+tavily-python>=0.5
+langchain-ibm>=0.3
+langchain-core>=0.3
