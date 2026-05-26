@@ -1,0 +1,29 @@
+# Keep the build context small and reproducible.
+
+# Python / Node caches and installs (rebuilt inside the image)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+
+# Runtime artifacts (per-session decks, ephemeral on the image too)
+workspace/
+
+# VCS + editor noise
+.git/
+.gitignore
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Docs that don't affect the runtime
+CLAUDE.md
+TODO.md
+
+# Local secrets
+.env
+.env.local
+*.pem
+*.key
