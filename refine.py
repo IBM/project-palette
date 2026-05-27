@@ -340,7 +340,9 @@ def _geometry_rewrite(current_js: str, facts: str) -> str:
 
 def geometry_refine_pass(out_dir: Path, deck: dict[str, Any],
                          progress: Progress | None = None,
-                         max_passes: int = 2) -> dict[str, Any]:
+                         max_passes: int = 2,
+                         slide_filter: set[int] | None = None,
+                         ) -> dict[str, Any]:
     """Deterministic geometry-repair pass — run inside the build, no VLM.
 
     ITERATIVE: each pass re-detects, repairs the still-flagged slides, and
@@ -348,6 +350,10 @@ def geometry_refine_pass(out_dir: Path, deck: dict[str, Any],
     so a slide that improves from 5 → 3 defects is accepted but still broken.
     A second pass picks up that under-correction. Slides reverted on a pass
     are NOT retried in later passes — same prompt + temp 0 = same revert.
+
+    `slide_filter` restricts the pass to just those slide numbers (used by
+    the per-slide Retry path so a re-roll gets the same post-processing as
+    the full build). None means "all slides", which is the build-time call.
 
     Returns {flagged, accepted, reverted, passes} — slide-number lists across
     all passes, for a one-line UI summary.
@@ -381,6 +387,9 @@ def geometry_refine_pass(out_dir: Path, deck: dict[str, Any],
         for idx, slide in enumerate(slides):
             n = slide.get("n")
             if not isinstance(n, int):
+                continue
+            # caller can scope the pass to specific slides (Retry path)
+            if slide_filter is not None and n not in slide_filter:
                 continue
             if progress:
                 progress(f"identifying layout errors (pass {pass_num})",

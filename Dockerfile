@@ -30,10 +30,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       fonts-ibm-plex \
       fonts-inter \
       fonts-jetbrains-mono \
+      fonts-crosextra-carlito \
       fontconfig \
       curl \
     && fc-cache -fv \
     && rm -rf /var/lib/apt/lists/*
+# fonts-crosextra-carlito is the OFL Calibri-metric-compatible drop-in;
+# render.py substitutes any non-IBM-Plex font to "Calibri", and LibreOffice
+# auto-resolves Calibri -> Carlito at render time on Linux.
 
 WORKDIR /app
 

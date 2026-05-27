@@ -93,7 +93,8 @@ ROSTER: dict[str, ModelSpec] = {
 PLANNER_MODELS = {"gpt-oss-120b": GPT_OSS_120B, "llama-3.3-70b": LLAMA_70B}
 DESIGNER_MODELS = {"palette-lora": PALETTE_ADAPTER,
                    "gpt-oss-120b": GPT_OSS_120B, "llama-3.3-70b": LLAMA_70B}
-CORRECTION_MODELS = {"gpt-oss-120b": GPT_OSS_120B, "llama-3.3-70b": LLAMA_70B}
+CORRECTION_MODELS = {"gpt-oss-120b": GPT_OSS_120B, "llama-3.3-70b": LLAMA_70B,
+                     "palette-lora": PALETTE_ADAPTER}
 
 
 def apply_models(planner: str = "", designer_coder: str = "",
