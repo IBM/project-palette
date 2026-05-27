@@ -318,8 +318,8 @@ select{font-family:inherit;font-size:12px;padding:5px 8px;border-radius:7px;
     edits like "make slide 5 a table".</p>
 
     <h4>PALETTES</h4>
-    <p>IBM is the default and reflects IBM's design guidelines. Neutral and
-    Mixed give small visual variations on the same model.</p>
+    <p>IBM is the default and reflects IBM's design guidelines. Neutral
+    is the non-IBM alternative.</p>
 
     <h4>WHEN A DECK LOOKS OFF</h4>
     <p>A "⚠ Heads-up" message means the model needed retries — tweak the
@@ -607,7 +607,7 @@ function addPlanCard(planText, sources) {
     '<label>Palette</label>' +
     '<select class="pal">' +
     // value = palette_family the LoRA expects; label = user-facing name
-    [['ibm_watsonx','IBM'], ['neutral','Neutral'], ['cool','Mixed']]
+    [['ibm_watsonx','IBM'], ['neutral','Neutral']]
       .map(([v,l]) => '<option value="' + v + '">' + l + '</option>').join('') +
     '</select><div style="flex:1"></div>' +
     '<button class="btn">Build deck</button></div>'
