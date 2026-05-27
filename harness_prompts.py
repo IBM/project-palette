@@ -84,9 +84,31 @@ If a piece of context is not on a slide, it is not in the plan. Put it in the `A
 
 ==================== DENSITY -- carry more than the deck needs ====================
 
-The plan must be DENSE and CONCRETE -- real numbers, named items, dates, specific claims, never vague placeholders -- ALL drawn from the request and any attached sources. The downstream model CURATES: it keeps, condenses, and cuts. A thin source yields a shorter plan; that is fine. A thin plan padded with invented filler is not -- the model cannot tell padding from real material and will surface it in the deck.
+The plan must be DENSE and CONCRETE -- real numbers, named items, dates, specific claims, never vague placeholders -- ALL drawn from the request and any attached sources. A thin source yields a shorter plan; that is fine. A thin plan padded with invented filler is not -- the model cannot tell padding from real material and will surface it in the deck.
 
-A dense section often carries a lead descriptor bullet, then 5-8 data bullets -- a slide can hold real detail; do not pre-thin it. The `Audience:` line itself can be a short paragraph stating who reads the deck and what shape they expect (a readout, a pitch, a working brief) -- that context is for the downstream model to curate from, not its own slide.
+The plan's content density (HOW MUCH source material it carries in total) is a different knob from each slide's visual density (HOW MUCH lands on one rendered canvas). Keep the plan rich; pace the slides. The `Audience:` line itself can be a short paragraph stating who reads the deck and what shape they expect (a readout, a pitch, a working brief) -- that context is for the downstream model to absorb, not its own slide.
+
+==================== SLIDE PACING -- split instead of stuff ====================
+
+The downstream coder is bounded by a 13.33in x 7.5in canvas. When a single slide carries too much, geometry breaks: labels overlap their own bodies, columns clip each other, cards run off the right edge. The downstream model does not curate aggressively -- it tends to render every bullet you give it. So the pacing decision lives HERE, in the plan, not in the coder.
+
+PRINCIPLE: when a section's content would push past the per-treatment caps below, SPLIT it into two (or more) slides with a shared theme rather than stuff one. A 12-slide deck of moderately-paced sections renders more reliably than an 8-slide deck of crammed ones. An extra slide is cheap; a broken layout is expensive.
+
+Per-treatment density caps (targets, not hard limits):
+  - Single hero stat: 1 number + 2-3 supporting lines
+  - Multi-stat row: 3-4 stats max
+  - Label-value facts: 4-6 parallel facts max
+  - Comparison cards: 3-4 cards, each with one short body line
+  - Pillars (3- or 4-column): 3-4 pillars, each with 2-3 sub-bullets max
+  - Bullet list: 5-7 items max; more -> split
+  - Timeline: 6-8 nodes max; more -> split by era / phase
+  - Donut / pie / bar chart: 4-6 categories max
+  - Table: 6 rows x 4 cols max
+  - Code panel: <= 25 lines or split across two side-by-side panels
+
+When content is rich, prefer splitting. "Customer wins" with 8 customers -> "Top 4 customer wins" + "Customer wins (continued)" with 4 cards each. A 12-stat dashboard -> 3 multi-stat-row slides. A 16-step process -> two 8-node timelines split by phase.
+
+This is a soft principle: a true capability matrix or a deliberately-dense reference card may be rightfully tight. But default toward splitting. The cost asymmetry favors more slides over broken ones.
 
 ==================== WRITE EACH SECTION IN THE SHAPE OF ITS VISUAL ====================
 
