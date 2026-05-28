@@ -89,26 +89,16 @@ The Dockerfile installs Python, Node, LibreOffice, poppler, and the three fonts.
 
 ## Deploying to IBM Code Engine
 
-Palette is built to drop into Code Engine as an HTTP application:
+See [deployment/DEPLOYMENT.md](deployment/DEPLOYMENT.md) for the full
+walkthrough — cross-building a `linux/amd64` image on an arm64 Mac,
+pushing to IBM Container Registry, and creating or updating the Code
+Engine app with `RITS_API_KEY` wired in as a secret.
 
-1. **Build and push the image** to IBM Container Registry (or any registry Code Engine can pull from):
-   ```bash
-   ibmcloud cr build --tag us.icr.io/<namespace>/palette .
-   ```
+TL;DR once `ICR_NAMESPACE` and `CE_PROJECT` are exported:
 
-2. **Create the Code Engine app**, binding `RITS_API_KEY` as a secret:
-   ```bash
-   ibmcloud ce application create \
-     --name palette \
-     --image us.icr.io/<namespace>/palette \
-     --port 8080 \
-     --env-from-secret rits-key \
-     --min-scale 1 --max-scale 1
-   ```
-
-3. **Heads-up — workspace is ephemeral.** `workspace/<thread_id>/` is on the pod's local disk; sessions don't survive pod restarts or scaling events. Users should download `.pptx` artifacts before walking away. If you need durable session storage, mount Cloud Object Storage as a workspace backing store — not wired in yet.
-
-4. **Minimum instance config:** 2 vCPU / 4 GB RAM is comfortable. The container peaks during LibreOffice PDF conversion and multi-slide parallel coding.
+```bash
+make ce-release        # build (linux/amd64) + push to ICR + deploy
+```
 
 ---
 

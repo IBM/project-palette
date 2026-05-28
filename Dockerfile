@@ -8,7 +8,10 @@
 # Build:  docker build -t palette .
 # Run:    docker run --rm -p 8080:8080 -e RITS_API_KEY=$RITS_API_KEY palette
 
-FROM python:3.12-slim
+# Pinned to bookworm: trixie dropped fonts-ibm-plex from the archive,
+# and IBM Plex is core to the LoRA's typography. Revisit when a
+# packaged or vendored replacement is wired in.
+FROM python:3.12-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -27,13 +30,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       nodejs npm \
       libreoffice \
       poppler-utils \
-      fonts-ibm-plex \
       fonts-inter \
       fonts-jetbrains-mono \
       fontconfig \
-      curl \
-    && fc-cache -fv \
+      curl ca-certificates unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# IBM Plex was removed from Debian; pull the upstream OpenType release
+# directly. v6.4.0 includes Sans, Serif, Mono, and Condensed variants.
+RUN mkdir -p /usr/share/fonts/opentype/ibm-plex \
+    && curl -fsSL -o /tmp/plex.zip \
+         https://github.com/IBM/plex/releases/download/v6.4.0/OpenType.zip \
+    && unzip -q /tmp/plex.zip -d /tmp/plex \
+    && find /tmp/plex -name '*.otf' -exec cp {} /usr/share/fonts/opentype/ibm-plex/ \; \
+    && rm -rf /tmp/plex /tmp/plex.zip \
+    && fc-cache -fv
 
 WORKDIR /app
 
