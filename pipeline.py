@@ -168,15 +168,26 @@ def _code_one_slide(deck: dict[str, Any], slide: dict[str, Any],
 
 
 def retry_slide(deck: dict[str, Any], out_dir: Path, slide_n: int,
-                *, temperature: float = 0.3) -> int:
+                *, temperature: float = 0.3) -> dict[str, Any]:
     """Re-run the coder for one slide with a small temperature kick (default
     0.3 — same as the run_coder retry temp). Same brief, same plan; the only
     knob is sampling. Used by the per-slide Retry button in the UI when a
-    slide looks like a bad roll. Returns the slide number on success; raises
-    if the slide isn't in the deck.
+    slide looks like a bad roll.
+
+    Then runs a single-slide geometry pass — detector + editor + verify gate —
+    so a re-rolled slide gets the same post-processing the full build gives.
+    Without this, Retry would publish raw coder output and silently skip the
+    correction layer.
 
     Writes the new JS in place, keeping a .prev.js backup so a regeneration
-    can be inspected against the previous attempt."""
+    can be inspected against the previous attempt.
+
+    Returns a summary {'slide_n', 'geometry'} with the geometry-pass result
+    (flagged/accepted/reverted/passes), for the UI to surface."""
+    # late import — refine imports pipeline transitively only for the editor
+    # path, so importing refine at module top creates a cycle.
+    from refine import geometry_refine_pass
+
     slide = next((s for s in deck["slides"] if s["n"] == slide_n), None)
     if slide is None:
         raise ValueError(f"slide {slide_n} not in deck")
@@ -197,7 +208,15 @@ def retry_slide(deck: dict[str, Any], out_dir: Path, slide_n: int,
     js_path.write_text(code)
     log.info("retried slide %d at temp %.1f (%d chars)",
              slide_n, temperature, len(code))
-    return slide_n
+
+    # Re-render once so the detector sees the new JS, then geometry-pass
+    # just this slide. The caller still does the final render to refresh
+    # all previews (the .pptx + PNGs the UI shows).
+    render(out_dir, out_dir / "deck.json")
+    geometry = geometry_refine_pass(out_dir, deck,
+                                    slide_filter={slide_n},
+                                    max_passes=1)
+    return {"slide_n": slide_n, "geometry": geometry}
 
 
 def run_coder(deck: dict[str, Any], out_dir: Path, *,

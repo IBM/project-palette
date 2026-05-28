@@ -296,6 +296,7 @@ select{font-family:inherit;font-size:12px;padding:5px 8px;border-radius:7px;
       <select id="mCritic">
         <option value="gpt-oss-120b">gpt-oss-120b</option>
         <option value="llama-3.3-70b">Llama-3.3-70B</option>
+        <option value="palette-lora">Palette LoRA (experimental)</option>
       </select></label>
     <div class="hint">Changes apply to your next build.</div>
   </div>
@@ -317,8 +318,8 @@ select{font-family:inherit;font-size:12px;padding:5px 8px;border-radius:7px;
     edits like "make slide 5 a table".</p>
 
     <h4>PALETTES</h4>
-    <p>IBM is the default and reflects IBM's design guidelines. Neutral and
-    Mixed give small visual variations on the same model.</p>
+    <p>IBM is the default and reflects IBM's design guidelines. Neutral
+    is the non-IBM alternative.</p>
 
     <h4>WHEN A DECK LOOKS OFF</h4>
     <p>A "⚠ Heads-up" message means the model needed retries — tweak the
@@ -606,7 +607,7 @@ function addPlanCard(planText, sources) {
     '<label>Palette</label>' +
     '<select class="pal">' +
     // value = palette_family the LoRA expects; label = user-facing name
-    [['ibm_watsonx','IBM'], ['neutral','Neutral'], ['cool','Mixed']]
+    [['ibm_watsonx','IBM'], ['neutral','Neutral']]
       .map(([v,l]) => '<option value="' + v + '">' + l + '</option>').join('') +
     '</select><div style="flex:1"></div>' +
     '<button class="btn">Build deck</button></div>'
@@ -698,7 +699,7 @@ async function retrySlide() {
   btn.disabled = true
   btn.classList.add('spin')
   const status = addMsg('status', 'Retrying slide ' + currentSlide
-    + ' at temp 0.3...')
+    + ' (re-roll + geometry pass)...')
   currentAbort = new AbortController()
   try {
     const r = await fetch('/retry/' + TID + '/' + currentSlide, {
@@ -707,8 +708,15 @@ async function retrySlide() {
     const d = await r.json()
     status.remove()
     if (!r.ok) throw new Error(d.error || r.statusText)
-    addMsg('bot', 'Retried slide ' + d.retried
-      + '. If it still looks off, try editing the plan or asking for a change.')
+    // Surface geometry verdict — same shape as the full build response.
+    const g = d.geometry || {}
+    let geomLine = ''
+    if (g.accepted && g.accepted.length)
+      geomLine += ' Layout repair fixed ' + g.accepted.length + ' slide.'
+    if (g.reverted && g.reverted.length)
+      geomLine += ' Layout repair could not improve ' + g.reverted.length + ' slide.'
+    addMsg('bot', 'Retried slide ' + d.retried + '.' + geomLine
+      + ' If it still looks off, try editing the plan or asking for a change.')
     await refreshDeck()
   } catch (err) {
     if (err.name === 'AbortError') {

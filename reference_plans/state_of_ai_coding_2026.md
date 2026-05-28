@@ -37,16 +37,15 @@ The category compressed three full eras into thirty-six months. [[render as a th
 - **Era 2 — Chat (2023–2025)** — Sidebar chat that could read the open file, then the open repo. Cursor's bet on a forked IDE paid off; Claude Code and Copilot Chat followed. Value moved from typing speed to thinking speed.
 - **Era 3 — Agent (2025–now)** — Multi-step task execution: read code, edit code, run tests, open PRs. Devin proved the demo; agent mode became table stakes in the major tools. Reliability is the unsolved problem.
 
-## Where AI lands in the developer workflow
-How developers actually use AI tools today, by workflow share. [[render as a donut chart, six segments summing to 100%]]
-- Code completion (inline): **42%**
-- Code edits and refactoring (chat-driven): **23%**
-- Debugging help: **14%**
-- Writing tests: **11%**
-- Documentation and comments: **6%**
-- Code review and PR drafting: **4%**
-
-Caption: "Completion still dominates by volume, but the value is shifting upmarket — chat-driven edits are where developers say they save the most time per session."
+## Where AI lands in developer workflows
+Six categories of AI use, by share of developer workflow (Q2 2026 industry survey). [[render as a plain label-value fact list, no chart]]
+- Code completion (inline) — 42%
+- Code edits and refactoring (chat-driven) — 23%
+- Debugging help — 14%
+- Writing tests — 11%
+- Documentation and comments — 6%
+- Code review and PR drafting — 4%
+The read: completion still dominates by volume, but chat-driven edits are where developers report saving the most time per session.
 
 ## A typical agent-mode session
 What an agent-mode interaction looks like at the terminal in 2026. [[render as a single full-width code panel — one plain code block, no syntax highlighting]]

@@ -92,12 +92,34 @@ pres.writeFile({{ fileName: {out_js} }}).then(() => {{
 """
 
 
+# Fonts we know are reliably present (or installable). The LoRA picks IBM
+# Plex for IBM-family palettes — we install Plex on Mac + the Dockerfile. For
+# anything else the LoRA emits (Inter, Arno Pro, "Sans"…), we substitute
+# Calibri at render time: it's on every Mac/Windows with Office, and the
+# Dockerfile installs `fonts-crosextra-carlito` (Calibri-metric-compatible)
+# so LibreOffice on Linux substitutes Calibri → Carlito automatically.
+_FONT_SAFELIST_PREFIXES = ("IBM Plex",)
+_FONT_FALLBACK = "Calibri"
+
+
+def _safe_font(name: str | None) -> str:
+    """Pass IBM Plex through; replace anything else with Calibri."""
+    if not name:
+        return _FONT_FALLBACK
+    return name if any(name.startswith(p) for p in _FONT_SAFELIST_PREFIXES) \
+        else _FONT_FALLBACK
+
+
 def _palette_runner_block(palette: dict[str, Any], deck_title: str) -> str:
     """Emit JS that pre-binds palette + helpers for every slide.
 
     The bound names match the CODER_SYSTEM_PROMPT contract: palette,
     makeShadow, softShadow, darkFooter, lightFooter, connector. slide,
     pres, slide_n, of_total are bound per-slide in the IIFE below.
+
+    Typography is filtered through `_safe_font` before binding so the
+    LoRA's font choice can't escape what we actually have installed
+    (see _FONT_SAFELIST_PREFIXES).
     """
     p = palette or _DEFAULT_PALETTE
     tokens = p.get("tokens") or _DEFAULT_PALETTE["tokens"]
@@ -122,8 +144,8 @@ def _palette_runner_block(palette: dict[str, Any], deck_title: str) -> str:
         # render crash without depending on the model getting the flat form right.
         "tokens": _color_tokens,
         "typography": {
-            "headline_font": typo.get("headline_font"),
-            "body_font": typo.get("body_font"),
+            "headline_font": _safe_font(typo.get("headline_font")),
+            "body_font": _safe_font(typo.get("body_font")),
         },
     }
     palette_js = json.dumps(_palette_obj)

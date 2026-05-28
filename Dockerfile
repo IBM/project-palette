@@ -32,9 +32,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       poppler-utils \
       fonts-inter \
       fonts-jetbrains-mono \
+      fonts-crosextra-carlito \
       fontconfig \
       curl ca-certificates unzip \
     && rm -rf /var/lib/apt/lists/*
+# fonts-crosextra-carlito is the OFL Calibri-metric-compatible drop-in;
+# render.py substitutes any non-IBM-Plex font to "Calibri", and LibreOffice
+# auto-resolves Calibri -> Carlito at render time on Linux.
 
 # IBM Plex was removed from Debian; pull the upstream OpenType release
 # directly. v6.4.0 includes Sans, Serif, Mono, and Condensed variants.

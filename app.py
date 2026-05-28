@@ -322,8 +322,10 @@ async def edit(req: EditReq):
 
 @app.post("/retry/{thread_id}/{slide_n}")
 async def retry(thread_id: str, slide_n: int):
-    """Re-run the coder for one slide at temp 0.3. Same brief, same plan —
-    just a different sampling. Used when a slide looks like a bad roll."""
+    """Re-run the coder for one slide at temp 0.3, then run a single-slide
+    geometry pass (detector + editor + verify gate) so the retry gets the
+    same post-processing the full build does. Same brief, same plan — just
+    a different sampling, then a correction pass scoped to this slide."""
     _session_id_var.set(thread_id)
     s = _registry.get(thread_id)
     if s is None or s.deck is None:
@@ -335,9 +337,10 @@ async def retry(thread_id: str, slide_n: int):
     log.info("retry thread=%s slide=%d", thread_id, slide_n)
     try:
         def _run():
-            retry_slide(s.deck, s.out_dir, slide_n)
-            return _rerender(s.out_dir)
-        pptx, previews = await asyncio.to_thread(_run)
+            result = retry_slide(s.deck, s.out_dir, slide_n)
+            pptx, previews = _rerender(s.out_dir)
+            return result, pptx, previews
+        result, pptx, previews = await asyncio.to_thread(_run)
     except Exception as exc:  # noqa: BLE001
         s.building = False
         log.exception("retry failed")
@@ -345,7 +348,9 @@ async def retry(thread_id: str, slide_n: int):
     s.pptx_path = pptx
     s.previews = previews
     s.building = False
-    return {"slide_count": len(s.previews), "retried": slide_n}
+    return {"slide_count": len(s.previews),
+            "retried": slide_n,
+            "geometry": result.get("geometry", {})}
 
 
 @app.get("/progress/{thread_id}")
