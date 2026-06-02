@@ -203,6 +203,57 @@ def fix_deck_id(deck: dict[str, Any], expected_id: str) -> tuple[dict[str, Any],
     return deck, warns
 
 
+# Required keys per slide that the coder's _slide_spec_block dereferences
+# directly. If the designer LoRA omits any of these, the coder crashes with
+# KeyError before producing any JS. Diagnosed 2026-05-29 on Education batch
+# (CS Lectures 2/6, THU_DSA 4 — visual_treatment missing). Defensive defaults
+# below let the coder receive a placeholder it can handle.
+_SLIDE_KEY_DEFAULTS: dict[str, Any] = {
+    "n": 0,
+    "of_total": 1,
+    "is_cover": False,
+    "is_closing": False,
+    "position_in_deck": "body",
+    "slide_title": "",
+    "main_message": "",
+    "visual_treatment": "bullet_list",
+    "slide_design_trace": "",
+    "key_content_points": [],
+}
+
+
+def fix_slide_keys(deck: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Fill in missing required slide keys with defensive defaults.
+
+    The designer LoRA occasionally drops fields (visual_treatment, main_message,
+    slide_design_trace) on individual slides — likely a max_tokens issue on
+    decks with long trace fields, or a generation artifact. Without these
+    keys the coder's _slide_spec_block crashes the whole deck build, even
+    though only one slide had the bad shape. This pre-coder pass fills the
+    gaps with reasonable defaults so the coder proceeds. Idempotent."""
+    deck = json.loads(json.dumps(deck))   # deep copy
+    warns: list[str] = []
+    slides = deck.get("slides", [])
+    for i, slide in enumerate(slides):
+        if not isinstance(slide, dict):
+            continue
+        for key, default in _SLIDE_KEY_DEFAULTS.items():
+            if key not in slide:
+                # Per-slide n is critical — derive from index if missing
+                if key == "n":
+                    slide[key] = i + 1
+                elif key == "of_total":
+                    slide[key] = len(slides)
+                elif key == "slide_title":
+                    slide[key] = f"Slide {slide.get('n', i+1)}"
+                else:
+                    # copy mutable defaults so all slides don't share one list
+                    slide[key] = list(default) if isinstance(default, list) else default
+                warns.append(f"slide {slide.get('n', i+1)}: missing key "
+                             f"{key!r} -> filled with default {slide[key]!r}")
+    return deck, warns
+
+
 # ---------------------------------------------------------------------------
 # Top-level entrypoint
 # ---------------------------------------------------------------------------
@@ -361,7 +412,8 @@ def postprocess_deck(deck: dict[str, Any], expected_id: str) -> tuple[dict[str, 
     deck, warns_id = fix_deck_id(deck, expected_id)
     palette, warns_palette = fix_palette(deck.get("palette", {}))
     deck["palette"] = palette
-    return deck, warns_id + warns_palette
+    deck, warns_slides = fix_slide_keys(deck)
+    return deck, warns_id + warns_palette + warns_slides
 
 
 # ---------------------------------------------------------------------------

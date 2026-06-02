@@ -176,10 +176,10 @@ main{display:grid;grid-template-columns:var(--left-w,480px) 6px 1fr;
 select{font-family:inherit;font-size:12px;padding:5px 8px;border-radius:7px;
   border:1px solid var(--border);background:var(--surface);color:var(--text)}
 .plan.done{opacity:.6}
-.plan-x{background:var(--surface);border:1px solid var(--border);
-  color:var(--muted);font-size:11px;padding:2px 9px;border-radius:6px;
-  cursor:pointer}
-.plan-x:hover{background:var(--bg);color:var(--text)}
+.plan-x{background:var(--accent);border:none;color:#fff;font-size:13px;
+  padding:6px 14px;border-radius:7px;cursor:pointer;font-weight:500;
+  margin-left:6px}
+.plan-x:hover{background:var(--accent-hover)}
 
 /* ---- composer ---- */
 .composer{border-top:1px solid var(--border);padding:14px 24px;
@@ -599,6 +599,9 @@ function addPlanCard(planText, sources) {
   card.innerHTML =
     '<div class="plan-h"><b>Plan</b><div class="spacer"></div>' +
     '<button class="plan-x" type="button" onclick="togglePlanEdit(this)">Edit</button>' +
+    '<button class="plan-x" type="button" onclick="savePlanToFile(this)" ' +
+    'title="Download the current plan as plan.md so you can save your edits, ' +
+    'share, or reload via Load plan later">Save</button>' +
     '</div>' +
     srcStrip +
     '<div class="plan-body"></div>' +
@@ -632,6 +635,32 @@ function togglePlanEdit(btn) {
     btn.textContent = 'Edit'
     card.querySelector('.plan-body').innerHTML = renderPlanMd(ta.value)
   }
+}
+
+// Save the current plan textarea content as a .md file via browser download.
+// Filename derives from the deck's `# Title` line when present, otherwise
+// falls back to "plan.md". The browser pops its Save-As dialog so the user
+// picks where the file lands -- can later reload via "Load plan".
+function savePlanToFile(btn) {
+  const card = btn.closest('.plan')
+  const text = card.querySelector('textarea').value
+  if (!text.trim()) return
+  // Derive a filename from the first `# Title` line, slugified.
+  let fname = 'plan.md'
+  const m = text.match(/^\s*#\s+(.+?)\s*$/m)
+  if (m) {
+    const slug = m[1].toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60)
+    if (slug) fname = slug + '.md'
+  }
+  const blob = new Blob([text], {type: 'text/markdown;charset=utf-8'})
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = fname
+  document.body.appendChild(a); a.click(); a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 async function buildDeck(card) {

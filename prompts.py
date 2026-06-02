@@ -429,7 +429,18 @@ def split_trace_and_code(assistant_text: str) -> tuple[str | None, str]:
 def parse_designer_output(assistant_text: str) -> dict[str, Any]:
     """Parse the designer's assistant message back into a deck JSON dict.
 
-    Tolerates a leading harmony channel prefix and ```json``` fencing.
+    Tolerates a leading harmony channel prefix, ```json``` fencing, and
+    minor LoRA-generated JSON breakage. The most common breakage we see:
+    the deck_design_trace field quotes inline plan directives verbatim,
+    including the inner `"X"` in `[[highlight "X" in accent color]]`, and
+    those double-quotes are not escaped inside the JSON string value. We
+    try strict json.loads first; on failure we fall back to json_repair,
+    which handles the unescaped-quote case correctly. Diagnosed
+    2026-05-27 on PresentBench MS-13 (Shenzhou-themed deck with many
+    `[[highlight "..."]]` directives), where 4 retries all produced the
+    same parse failure at similar character positions — i.e. the failure
+    was deterministic for the input, not roll variance, and prompted a
+    repair pass rather than a re-roll.
     """
     text = _strip_harmony_channel_prefix(assistant_text).strip()
     if text.startswith("```"):
@@ -440,4 +451,32 @@ def parse_designer_output(assistant_text: str) -> dict[str, Any]:
     # sometimes formats long deck_design_trace strings as multi-paragraph
     # prose with literal newlines, which strict JSON forbids but is otherwise
     # well-formed.
-    return json.loads(text, strict=False)
+    try:
+        return json.loads(text, strict=False)
+    except json.JSONDecodeError:
+        # Fallback: json_repair handles unescaped inner double-quotes and a
+        # few other LoRA-generated breakages without losing content.
+        import json_repair
+        repaired = json.loads(json_repair.repair_json(text), strict=False)
+        # Second observed shape: the LoRA sometimes accidentally closes the
+        # deck object early and emits a trailing slide or two at the top
+        # level instead of inside `slides[]`. json_repair recovers this as
+        # a top-level list `[deck_with_partial_slides, slide_N, slide_N+1]`.
+        # Diagnosed 2026-05-27 on PresentBench MS-06 (Ne Zha / Shen Gongbao):
+        # 10 slides in slides[], 2 more dicts at top level. Pull the trailing
+        # slide-shaped dicts back into the deck's slides list so the deck
+        # builds with its full slide count.
+        if isinstance(repaired, list):
+            if not repaired or not isinstance(repaired[0], dict):
+                raise ValueError(
+                    "designer output parsed as a list with no dict head; "
+                    "cannot recover a deck object")
+            deck = repaired[0]
+            tail_slides = [item for item in repaired[1:]
+                           if isinstance(item, dict)
+                           and "n" in item
+                           and "slide_design_trace" in item]
+            if tail_slides:
+                deck.setdefault("slides", []).extend(tail_slides)
+            return deck
+        return repaired

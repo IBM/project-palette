@@ -54,6 +54,154 @@ _ASSET_REF = re.compile(r"""(["'])(assets/[^"']+)\1""")
 # correct path untouched.
 _ICON_BARE = re.compile(r"icons/(?!carbon/)([\w.+-]+\.svg)")
 
+# The LoRA sometimes emits a broken "accent-highlight" pattern: it splits a
+# label using `label.replace(fact, "")` and appends the fact as a separately
+# styled fragment. When the fact is not actually a substring of the label
+# the replace is a no-op and the fact gets DUPLICATED at the end of the
+# rendered line ("founded in 1995.Shenzhen, 1995."). When the fact IS a
+# substring the fact gets moved to the end after the period ("rechargeable
+# — not cars.batteries."). Either way the rendered bullet is broken.
+#
+# Diagnosed 2026-05-27 on PresentBench MS-01 slides 3 + 4 (BYD speech) and
+# ted_chinese_10 slide 6. Hits judge items Visual 2.16 (malformed text) and
+# Fundamentals 1.12 (grammatical accuracy) directly.
+#
+# We handle this by injecting a tiny helper, _hSplit, at the top of any JS
+# file that contains `.replace(<expr>, "")`, and rewriting both pattern
+# shapes to call the helper. The helper places the accent-styled fact in
+# its correct position inside the label rather than at the end.
+
+_HIGHLIGHT_HELPER_JS = """\
+// Auto-injected highlight-split helper: places an accent-styled `fact`
+// at its correct position inside `label`. Replaces a broken LoRA pattern
+// that used label.replace(fact, "") + a trailing accent fragment.
+function _hSplit(label, fact, normalOpt, accentOpt) {
+  var s = String(label == null ? "" : label);
+  var h = String(fact == null ? "" : fact);
+  if (!h) return [{ text: s, options: normalOpt }];
+  var i = s.indexOf(h);
+  if (i < 0) return [{ text: s, options: normalOpt }];
+  var runs = [];
+  if (i > 0) runs.push({ text: s.slice(0, i), options: normalOpt });
+  runs.push({ text: h, options: accentOpt });
+  var tail = s.slice(i + h.length);
+  if (tail) runs.push({ text: tail, options: normalOpt });
+  return runs;
+}
+
+"""
+
+# Pattern A: 3-fragment addText with .replace + bold fact + trailing "."
+# As seen on MS-01 slides 3 and 4. Captures the label expr, fact expr, and
+# the two options blocks so we can hand them to _hSplit.
+_HIGHLIGHT_BUG_3FRAG = re.compile(
+    r"""slide\.addText\(\[\s*
+        \{\s*text:\s*(?P<label>[^,]+?)\s*\.\s*replace\(\s*(?P<fact>[^,]+?)\s*,\s*""\s*\)\s*,
+        \s*options:\s*(?P<normal>\{[^{}]*\})\s*\}\s*,\s*
+        \{\s*text:\s*(?P=fact)\s*,\s*options:\s*(?P<accent>\{[^{}]*\bbold\s*:\s*true[^{}]*\})\s*\}\s*,\s*
+        \{\s*text:\s*"\."\s*,\s*options:\s*\{[^{}]*\}\s*\}\s*,?\s*
+        \](?P<rest>\s*,)""",
+    re.VERBOSE | re.DOTALL,
+)
+
+# Pattern B: var-assigned + 2-fragment addText. Seen on ted_chinese_10
+# slide 6. The var `cleanX = orig.replace(fact, "")` is rewritten to
+# preserve the original (we don't need it any more), and the 2-fragment
+# addText is rewritten to use _hSplit.
+_HIGHLIGHT_BUG_2FRAG_VAR = re.compile(
+    r"""var\s+(?P<var>\w+)\s*=\s*(?P<label>[^;]+?)\s*\.\s*replace\(\s*(?P<fact>[^,]+?)\s*,\s*""\s*\)\s*;
+        \s*var\s+(?P<runs>\w+)\s*=\s*\[\s*
+        \{\s*text:\s*(?P=var)\s*,\s*options:\s*(?P<normal>\{[^{}]*\})\s*\}\s*,\s*
+        \{\s*text:\s*(?P=fact)\s*,\s*options:\s*(?P<accent>\{[^{}]*\bbold\s*:\s*true[^{}]*\})\s*\}\s*,?\s*
+        \]\s*;""",
+    re.VERBOSE | re.DOTALL,
+)
+
+# Pattern C: 2-fragment inline addText, no terminal "." fragment, no var
+# pre-assignment. Seen on MS-01 slide 4 (BYD timeline). Same shape as A
+# but only two fragments. Kept as a separate regex rather than making A
+# tolerant of either-arity, to keep each pattern's intent obvious.
+_HIGHLIGHT_BUG_2FRAG = re.compile(
+    r"""slide\.addText\(\[\s*
+        \{\s*text:\s*(?P<label>[^,]+?)\s*\.\s*replace\(\s*(?P<fact>[^,]+?)\s*,\s*""\s*\)\s*,
+        \s*options:\s*(?P<normal>\{[^{}]*\})\s*\}\s*,\s*
+        \{\s*text:\s*(?P=fact)\s*,\s*options:\s*(?P<accent>\{[^{}]*\bbold\s*:\s*true[^{}]*\})\s*\}\s*,?\s*
+        \](?P<rest>\s*,)""",
+    re.VERBOSE | re.DOTALL,
+)
+
+# Adjacent-runs missing-space bug. The LoRA emits a 2-fragment array
+#   [{ text: <X>, options: {color: palette.accent, bold: true} },
+#    { text: <Y>, options: {color: palette.dark_text} }]
+# meaning to render "<X> <Y>" (accent + body). It forgets the space:
+# the rendered output is "<X><Y>" — "second-largestProducer of...",
+# "AwardRecognition from...", "TodayChina's largest car company".
+#
+# Diagnosed 2026-05-27 on MS-01 neutral-palette slide 5. The fix
+# wraps the second fragment's text expression in a runtime guard that
+# inserts a leading space when the value is a non-empty string that
+# doesn't already start with whitespace AND the first fragment's text
+# doesn't end with whitespace or terminal punctuation. The wrapper is
+# a no-op for the (rare) legitimate case where two adjacent runs are
+# intentionally concatenated without a separator.
+#
+# We need a runtime guard rather than a static string-edit because the
+# fragments' `text` values are commonly variable references (`p.rest`,
+# `m.body`, `e.caption`) — we can't peek at them at rewrite time.
+_ADJACENT_ACCENT_THEN_BODY = re.compile(
+    r"""\{\s*text:\s*(?P<first>[^,{}]+?)\s*,
+        \s*options:\s*\{(?P<first_opts>[^{}]*\bcolor\s*:\s*palette\.accent\b[^{}]*)\}\s*\}\s*,\s*
+        \{\s*text:\s*(?P<second>[^,{}]+?)\s*,
+        \s*options:\s*\{(?P<second_opts>(?:(?!\bcolor\s*:\s*palette\.accent\b)[^{}])*)\}\s*\}""",
+    re.VERBOSE,
+)
+
+
+def _fix_adjacent_runs_missing_space(src: str) -> str:
+    """Wrap the second fragment's text in a runtime space-prefix guard.
+
+    Only fires when the first fragment's options name `palette.accent` and
+    the second fragment's options do NOT. The runtime guard is conservative
+    — it leaves the second fragment unchanged unless (a) its value is a
+    non-empty string, (b) it doesn't already start with whitespace, and (c)
+    the first fragment's value doesn't end with whitespace or terminal
+    punctuation that already provides a separator."""
+    def _sub(m: re.Match) -> str:
+        first, first_opts = m["first"], m["first_opts"]
+        second, second_opts = m["second"], m["second_opts"]
+        # Wrap the second fragment's text expression. Use a runtime helper
+        # rather than a static rewrite so the same guard works whether the
+        # value is a literal string or a variable reference.
+        wrapped = (f"(typeof {second} === \"string\" && {second}.length && "
+                   f"!/^\\s/.test({second}) && "
+                   f"!/[\\s.,!?:;\\-—\\u2014]$/.test(String({first})) "
+                   f"? \" \" + {second} : {second})")
+        return (f"{{ text: {first}, options: {{{first_opts}}} }}, "
+                f"{{ text: {wrapped}, options: {{{second_opts}}} }}")
+    return _ADJACENT_ACCENT_THEN_BODY.sub(_sub, src)
+
+
+def _fix_highlight_split_bug(src: str) -> str:
+    """Rewrite the broken accent-highlight pattern to use the _hSplit helper.
+
+    Three pattern shapes handled (see comments next to the regexes above).
+    The helper is injected exactly once per file, at the top, only when
+    a rewrite actually fires."""
+    def _sub_inline(m: re.Match) -> str:
+        return (f"slide.addText(_hSplit({m['label']}, {m['fact']}, "
+                f"{m['normal']}, {m['accent']}){m['rest']}")
+    fixed = _HIGHLIGHT_BUG_3FRAG.sub(_sub_inline, src)
+    fixed = _HIGHLIGHT_BUG_2FRAG.sub(_sub_inline, fixed)
+
+    def _sub_var(m: re.Match) -> str:
+        return (f"var {m['runs']} = _hSplit({m['label']}, {m['fact']}, "
+                f"{m['normal']}, {m['accent']});")
+    fixed = _HIGHLIGHT_BUG_2FRAG_VAR.sub(_sub_var, fixed)
+
+    if fixed != src and "_hSplit" not in src:
+        fixed = _HIGHLIGHT_HELPER_JS + fixed
+    return fixed
+
 
 def _remap_asset_path(path: str) -> str:
     """Snap an asset path onto a real file on disk. An exact match passes
@@ -77,12 +225,38 @@ def _remap_asset_path(path: str) -> str:
     return path
 
 
-def _apply_deterministic_js_fixes(js_dir: Path) -> None:
+# Matches an `slide.addImage({ ... path: "assets/logos/<file>" ... });` call.
+# Optional preceding whitespace on the line is consumed so the strip leaves
+# no orphaned blank-indented line. Multi-line addImage calls (with the
+# closing `});` on its own line) are matched via re.DOTALL — pptxgenjs
+# accepts either layout, and the LoRA emits both shapes.
+_BRANDING_LOGO_ADDIMAGE = re.compile(
+    r"^[ \t]*slide\.addImage\(\s*\{[^{}]*?"
+    r'path:\s*["\']assets/logos/[^"\']*["\'][^{}]*?'
+    r"\}\s*\)\s*;\s*$\n?",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def _strip_branding_assets(src: str) -> str:
+    """Remove addImage calls whose path points at assets/logos/. PresentBench
+    and other non-IBM render targets opt out of the IBM 8-bar brand mark via
+    `include_branding_assets=False` on generate_deck; this is what enforces
+    it deterministically on the rendered JS."""
+    return _BRANDING_LOGO_ADDIMAGE.sub("", src)
+
+
+def _apply_deterministic_js_fixes(js_dir: Path, *,
+                                  include_branding_assets: bool = True) -> None:
     """Tier-1 deterministic fixes on generated slide JS — known categorical
     bugs repaired by string rewrite, no model call:
       - iconify namespace bug: 'icons/carbon:NAME' -> 'icons/carbon/NAME'
       - bare icon path:        'icons/NAME.svg'    -> 'icons/carbon/NAME.svg'
       - asset-path remap: a hallucinated/misnamed assets/ path -> a real file
+      - highlight-split bug:   `<L>.replace(<F>, "")` + bold-<F> fragment
+                               -> _hSplit(<L>, <F>, normalOpt, accentOpt)
+      - branding-asset strip (opt-in via include_branding_assets=False):
+                               remove `slide.addImage({path: "assets/logos/..."})`
     Bugs a regex cannot safely fix (apostrophe quoting, addText string arrays)
     are left to the render-error repair loop."""
     for p in sorted(js_dir.glob("*.js")):
@@ -94,6 +268,10 @@ def _apply_deterministic_js_fixes(js_dir: Path) -> None:
         fixed = _ASSET_REF.sub(
             lambda m: m.group(1) + _remap_asset_path(m.group(2)) + m.group(1),
             fixed)
+        fixed = _fix_highlight_split_bug(fixed)
+        fixed = _fix_adjacent_runs_missing_space(fixed)
+        if not include_branding_assets:
+            fixed = _strip_branding_assets(fixed)
         if fixed != src:
             p.write_text(fixed)
             log.info("deterministic JS fixes applied to %s", p.name)
@@ -270,9 +448,17 @@ def generate_deck(plan_md: str, out_dir: Path | str, *,
                   deck_id: str = "deck", palette_family: str = "ibm_watsonx",
                   available_icons: list[str] | None = None,
                   workers: int | None = None,
+                  include_branding_assets: bool = True,
                   progress: Progress | None = None) -> dict[str, Any]:
     """Run the full Stage-2 pipeline. Returns a dict with the parsed deck,
-    the .pptx path, the preview PNG paths, and the y-bounds lint warnings."""
+    the .pptx path, the preview PNG paths, and the y-bounds lint warnings.
+
+    include_branding_assets: when False, strips any
+    `slide.addImage({path: "assets/logos/..."})` calls from the coder's
+    output. Used for non-IBM render targets (e.g. PresentBench) where the
+    LoRA's training-data-default of dropping the IBM 8-bar logo on cover
+    and thank-you slides is inappropriate. Default True preserves the
+    behavior for deck_forge UI and IBM-deck synthesis."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     if available_icons is None:
@@ -306,7 +492,9 @@ def generate_deck(plan_md: str, out_dir: Path | str, *,
     coder_retried = run_coder(deck, out_dir, workers=workers, progress=progress)
 
     # 4. deterministic JS fixes — known categorical bugs, no model call
-    _apply_deterministic_js_fixes(out_dir / "output_js")
+    _apply_deterministic_js_fixes(
+        out_dir / "output_js",
+        include_branding_assets=include_branding_assets)
 
     # 5. render
     if progress:
