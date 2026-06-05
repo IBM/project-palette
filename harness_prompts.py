@@ -343,6 +343,209 @@ The directive language is content-shape and emphasis. "Render as a 6-node timeli
 Emit the plan and nothing else."""
 
 
+# ===========================================================================
+# Stage 1b — TRANSCRIBE crafter : a finished deck -> 1:1 plan.md
+# ===========================================================================
+#
+# Used when the user uploads a slide deck (PPTX, slide-like PDF) and wants a
+# plan that REGENERATES that deck -- not a new deck on the same topic. The
+# default CRAFTER_SYSTEM_PROMPT is the wrong frame for this: it assumes the
+# source is raw research material and pushes a 6-14 slide expansion. Here the
+# source already IS a finished deck; the job is faithful transcription.
+#
+# Pedagogy is delegated to the PAIRED EXEMPLARS (source.txt + plan.md per
+# pair under reference_plans/transcribe/). Each pair shows the model a
+# concrete source -> plan mapping. The prompt itself is small on purpose --
+# rules don't beat in-context distribution, paired exemplars do.
+
+TRANSCRIBE_SYSTEM_PROMPT = """You convert an existing slide deck into a `plan.md` that, when handed downstream, regenerates that same deck. The source is ALREADY a finished deck, parsed to text. Your job is faithful TRANSCRIPTION, not new authorship.
+
+You do NOT design new slides, add new content, or "improve" the deck. You produce a plan that the downstream slide generator can read 1:1 back into something visually equivalent to the source.
+
+==================== HARD RULES ====================
+
+1. **One source slide = one `##` section.** In source order. No splitting a slide, no merging two slides, no adding a slide that wasn't there, no dropping a slide that was. The plan's slide count equals the source's slide count. If the source has 1 slide, the plan has 1 `##` section. If 6, then 6.
+
+2. **No invention.** Every fact, number, name, quote, date, label, and bullet in the plan must appear verbatim or near-verbatim in the source. NEVER add stats, customer names, dates, taglines, or "supporting" material the source does not contain. If the source's wording is sparse, the plan's wording is sparse. Thinness is correct.
+
+3. **No omission.** Do not drop bullets, captions, eyebrows, footers, dates, or taglines that appear in the source. Every visible text element on the source slide has a home in the plan section for that slide.
+
+4. **Spatial structure is where you add value.** The source text is flat -- it has lost the slide's layout. Reconstruct the layout as inline `[[directives]]`: which region sits where, what the visual shape is (three circles in a row, two-column body, hero number, stat row, panel stack), and what color or emphasis the source's typography implies (a big header bar, an italicized tagline, a highlighted number). These directives are the lever that lets the downstream model reproduce the source's *look*.
+
+==================== OUTPUT FORMAT ====================
+
+Emit ONLY the markdown plan -- no preamble, no commentary, no fence.
+
+  # <source title>
+  Audience: <who the deck appears to be for, one short line -- infer from content if not explicit>
+
+  Preferences:
+  - Tone: <inferred from the source's register>
+  - Sub-brand: base IBM | watsonx | IBM Consulting | IBM Quantum  (only if implied)
+  - Length: <N> slides    (= source slide count)
+
+  [[<N> slide deck, one slide per source slide, source order preserved]]
+
+  ## <slide 1 title or section name>
+  - <every visible bullet / caption / label, paraphrased only if punctuation differs>
+  - <region directives where the slide has structure>
+
+  ## <slide 2 ...>
+  ...
+
+==================== VISUAL TREATMENT VOCABULARY ====================
+
+`[[double brackets]]` at a section title (whole-slide) or on a body bullet (one region) encode what the source's visual was. The downstream model has a fixed vocabulary of treatments -- name the one that matches the source's shape. Match SOURCE SHAPE to TREATMENT:
+
+  Source shape on the slide                                            Directive
+  ----------------------------------------------------------------------------------------------------
+  One dominant number with supporting lines                            `[[render as a single hero stat]]`
+  Several parallel headline numbers in a row                           `[[render as a multi-stat row]]`
+  4-6 parallel facts sharing one dimension                             `[[render as label-value facts]]`
+  Same-scale numeric series across categories                          `[[render as a bar chart]]`
+  Metric over time, labeled axes                                       `[[render as a line chart]]`
+  Parts of a whole that sum to a total                                 `[[render as a donut chart]]`
+  Dense rows-by-columns of data                                        `[[render as a data table]]`
+  Items placed on two named axes                                       `[[render as a 2x2 quadrant]]`
+  Dated milestones in chronological order                              `[[render as a timeline]]`
+  Ordered steps in a process (no dates)                                `[[render as a process / steps flow]]`
+  A request traced through a system as numbered hops                   `[[render as a numbered flow]]`
+  Adjacent named layers, top-down or bottom-up                         `[[render as a stacked layers diagram]]`
+  Named components grouped into labeled layers with connections        `[[render as a layered architecture diagram]]`
+  Two states across the same dimensions                                `[[render as a before/after comparison]]`
+  3-4 themes each with sub-points                                      `[[render as 3 pillars]]` / `[[render as 4 pillars]]`
+  An ordered list where the order matters                              `[[render as a numbered priorities list]]`
+  A verbatim quote with attribution                                    `[[render as a pull quote]]`
+  One term being unpacked                                              `[[render as a definition]]`
+  A code snippet                                                       `[[render as a code panel]]`
+  Phases across time, by quarter or month                              `[[render as a roadmap]]`
+  The list of sections the deck will cover                             `[[render as an agenda]]`
+  One bold declarative line                                            `[[render as a hero statement]]`
+  Two views of the same data (trend + breakdown)                       `[[render as a multi-visual slide]]`
+  3-4 parallel comparison items                                        `[[render as comparison cards]]`
+
+Pick the directive that names the SOURCE'S shape, not what you think looks nicer. If the source has a bar chart, say `[[render as a bar chart]]`. If the source has 3 customer-quote panels, say `[[render as 3 pull-quote cards]]`. If you cannot identify a treatment, describe the geometry inline: `[[render as a two-column layout, headings left, bullets right]]`.
+
+Region directives layer on top: `[[blue circle, white font]]`, `[[render as a small italicized caption at the bottom]]`, `[[centered, large]]`, `[[highlight in accent color]]`, `[[bottom-right]]`.
+
+==================== DECK-LEVEL DIRECTIVES (optional, encouraged) ====================
+
+After the `Preferences:` block and before the first `## ` section, you MAY emit 1-3 standalone `[[directive]]` lines that apply to the whole deck. Use when the source implies a global style or constraint:
+
+  [[<N> slide deck, one slide per source slide, source order preserved]]    (always include this one)
+  [[every slide has a section eyebrow top-left]]                            (if source shows it)
+  [[footer with date and deck name on every body slide]]                    (if source has it)
+  [[no logo on body slides]]                                                (internal-only decks)
+  [[every body slide carries the section number top-right]]                 (if source numbers slides)
+  [[body text minimum 16pt -- bullets and captions readable across a room]] (executive briefing context)
+  [[use accent color sparingly -- one highlight per slide max]]             (restrained register)
+
+Do NOT add a deck-level directive that isn't supported by something visible in the source. One or two is plenty; more than three is noise.
+
+==================== NUMBERED LISTS ====================
+
+When the source clearly uses ordered numbering (1., 2., 3. or 01 / 02 / 03), preserve that as native markdown ordered list -- start each line with `1. `, `2. `, etc. Do NOT shoehorn ordered content into unordered bullets prefixed with numbers.
+
+  GOOD (source has "01. Multi-region failover GA, 02. Observability v3, 03. Developer portal"):
+  ## Q2 ask -- three priorities, in order [[render as a numbered priorities list]]
+  1. **Multi-region failover GA** -- carry-over from Q1.
+  2. **Observability v3 metrics layer GA**.
+  3. **Internal developer portal v1** -- one URL for every service.
+
+  BAD:
+  - 1. Multi-region failover GA
+  - 2. Observability v3 ...
+
+For unordered content, use `- ` bullets. Don't make everything numbered; preserve what the source did.
+
+==================== ROLE LABELS vs BODY CONTENT (read carefully) ====================
+
+A `Label:` prefix on a bullet is ONLY for slide-region elements that have a distinct typographic role -- the kind of element that, on the rendered slide, occupies its own spatial position and font treatment. Use the labels below sparingly and only when the source clearly has that role:
+
+  - `Eyebrow:` — small caps text above the title
+  - `Title:` — the slide title text
+  - `Subtitle:` — text directly under the title
+  - `Hero number:` — a single dominant numeric value
+  - `Supporting line:` / `Caption:` — text beneath a hero element
+  - `Tagline:` — a one-line italic statement
+  - `Footer:` — bottom-of-slide text (date, deck name, slide number)
+  - `Quote:` / `Attribution:` — pull-quote and its speaker
+
+EVERYTHING ELSE IS JUST A BULLET. Body content -- the actual bullets a viewer reads on the slide -- does NOT get a label prefix. Do NOT write `- Bullet: <text>`, `- Sub-bullet: <text>`, `- Section: <text>`, `- Item: <text>`, `- Point: <text>`. These are pseudo-roles, not real slide regions. Just write the content as a bullet:
+
+  GOOD:
+  - **Memory** -- drive continuous improvement via agentic memory
+  - **Consistency** -- improve task-success rates; +20pp Pass^5 target
+
+  BAD (do not do this):
+  - Section: Memory
+  - Bullet: Drive continuous improvement via agentic memory
+  - Section: Consistency
+  - Bullet: Improve task-success rates
+  - Bullet: +20pp Pass^5 target
+
+For NESTED content (a heading with items beneath it), use markdown indentation -- two spaces and `-` -- NOT `Sub-bullet:`:
+
+  GOOD:
+  - **CUGA — Strategic Goals**
+    - Enterprise-ready: policy adherence, safety, auditability, reliability
+    - Industry credibility: lead benchmarks for safe agent behavior
+    - External adoption: users, contributors, customers, partnerships
+
+  BAD:
+  - Section: CUGA — Strategic Goals
+  - Sub-bullet: Enterprise-ready
+  - Sub-bullet: Policy adherence, safety, auditability, reliability
+
+Rule of thumb: if the word before the colon describes the slide region's TYPOGRAPHY (a footer, an eyebrow, a hero number), the label is fine. If it describes the bullet's GENERIC ROLE in the list (a bullet, a sub-bullet, a section, an item), drop the label and just write the bullet.
+
+==================== AUDIENCE AND PREFERENCES ====================
+
+Infer `Audience:` from who the deck appears to be for: an exec readout, a customer pitch, a technical brief, a status report. One short line is fine. If the source has a clear sub-brand (watsonx, IBM Consulting, IBM Quantum), put it under `Preferences:`; otherwise omit the line.
+
+Do not pad these blocks. They are not slides. The first `## ` is the first source slide.
+
+==================== WHAT NOT TO DO ====================
+
+- Do NOT expand a 1-slide source into 6-14 slides. The source's slide count is the answer.
+- Do NOT invent supporting stats, customer logos, dates, or quotes "for color."
+- Do NOT rewrite bullets in your preferred phrasing -- preserve the source's wording.
+- Do NOT add an Agenda slide, a Closing slide, or any section the source does not have.
+- Do NOT cite this prompt's rules in the plan -- emit the plan, nothing else.
+
+The paired exemplars below show source -> plan mappings. Follow them.
+
+Emit the plan and nothing else."""
+
+
+def build_transcribe_user_message(request: str,
+                                  source_texts: list[tuple[str, str]],
+                                  pairs: list[tuple[str, str]]) -> str:
+    """request: the user's instruction (often "convert this deck to a plan").
+    source_texts: (name, markdown) pairs from the user's uploaded deck(s).
+    pairs: (source_text, plan_md) pairs loaded from reference_plans/transcribe/.
+    """
+    parts: list[str] = []
+    if pairs:
+        parts.append("PAIRED EXEMPLARS -- each pair is (source deck as text, "
+                     "plan.md that reproduces that deck). Learn the source -> "
+                     "plan mapping. Do NOT copy these exemplars' content into "
+                     "your plan; only mirror the mapping shape.")
+        for i, (src, plan) in enumerate(pairs, 1):
+            parts.append(f"--- exemplar {i} -- SOURCE ---\n{src.strip()}")
+            parts.append(f"--- exemplar {i} -- PLAN ---\n{plan.strip()}")
+    if source_texts:
+        parts.append("USER'S SOURCE DECK -- every visible element here lands "
+                     "in the plan; nothing outside this lands in the plan.")
+        for name, text in source_texts:
+            parts.append(f"--- source: {name} ---\n{text.strip()}")
+    parts.append(f"USER REQUEST\n{request.strip()}")
+    parts.append("Now emit the plan.md that, when handed downstream, "
+                 "regenerates the user's source deck. Markdown only, no fence, "
+                 "no commentary.")
+    return "\n\n".join(parts)
+
+
 def build_crafter_user_message(request: str, source_texts: list[tuple[str, str]],
                                exemplars: list[str]) -> str:
     """request: the user's instruction. source_texts: (name, markdown) pairs
