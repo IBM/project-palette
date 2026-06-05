@@ -1,0 +1,63 @@
+SOVEREIGN CORE + CUGA
+
+Credit Exception Agent
+
+Governed autonomy for regulated banking — the agent coordinates, governance is structural.
+
+TEST
+
+Eval before production
+
+CONTROL
+
+Live guardrails during action
+
+PROVE
+
+Certified receipts after
+
+WHY THIS PLATFORM
+
+Policy enforcement first
+
+Agent cannot approve an exception that violates lending policy or skip adverse-action disclosure rules
+
+Self-learning built in
+
+A wrongly escalated hardship case becomes a new eval — next time the agent routes it correctly
+
+Memory that compounds
+
+Agent recalls this customer's prior exception history and resolution outcome without re-investigation
+
+Open models, no lock-in
+
+Bank runs Granite today, switches to Mistral tomorrow — same governance contract, no data leaves boundary
+
+Agents as a service
+
+Credit exception agent live in days, handling 500+ cases/week — no 6-month integration project
+
+ARCHITECTURE
+
+SOVEREIGN BOUNDARY
+
+CUGA Credit Exception Agent
+
+Self-learning  |  Compounding memory  |  Open models
+
+Memory
+
+Outcomes
+
+Orchestration
+
+Triggers
+
+Sovereign Core Governance
+
+Policy  |  Audit  |  Compliance  |  Evidence
+
+IBM Sovereign Core | June 2026
+
+Competitors govern inside their estate. We govern inside yours.

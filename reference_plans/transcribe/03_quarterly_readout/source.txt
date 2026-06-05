@@ -1,0 +1,59 @@
+--- slide 1 ---
+
+PLATFORM ENGINEERING
+
+Q1 2026 readout
+
+Where we landed, what slipped, and the Q2 ask
+
+Maya Okafor, VP Platform Engineering
+April 18, 2026
+
+--- slide 2 ---
+
+The three numbers that summarize Q1
+
+Build p50: 2.1 min (down from 4.8 in Q4)
+
+Deploy frequency: 47 per day (up from 19)
+
+Change failure rate: 4.2% (down from 7.1%)
+
+All three Q1 targets were beat. The first two by a wide margin.
+
+--- slide 3 ---
+
+What shipped vs what slipped
+
+Shipped: Build pipeline rewrite, deploy bot v2, on-call rotation tooling, secrets rotation API.
+
+Slipped: Multi-region failover -- pushed to Q2 because the cert-manager migration took two extra weeks. No customer impact; we held the launch.
+
+Slipped: Observability v3 -- partially shipped (logs, traces). Metrics moved to Q2 to share migration window with multi-region failover.
+
+--- slide 4 ---
+
+Incidents in Q1
+
+Two SEV-2s. Zero SEV-1s.
+
+SEV-2 on 2026-02-04: deploy bot regressed on a config-validator change, blocked 11 deploys for 38 minutes. Post-mortem: missing integration test, now in place.
+
+SEV-2 on 2026-03-12: a noisy-neighbor on the shared build fleet pushed build p99 to 12 minutes for 90 minutes. Fix: per-tenant quotas, shipped 2026-03-19.
+
+--- slide 5 ---
+
+Q2 ask -- three priorities, in order
+
+01. Multi-region failover GA (carry-over from Q1).
+02. Observability v3 metrics layer GA.
+03. Internal developer portal v1 -- one URL for every service's runbook, deploy history, and on-call.
+
+The Q2 ask matches Q1 headcount. No new hires requested.
+
+--- slide 6 ---
+
+Thank you
+
+Questions welcome
+maya.okafor@ibm.com

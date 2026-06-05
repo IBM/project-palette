@@ -1,0 +1,11 @@
+WATSONX ORCHESTRATE 2.0
+
+73% faster
+
+Median workflow execution time, Orchestrate 2.0 vs 1.x
+
+Source: IBM internal benchmark, 1,200 workflow runs, March 2026
+
+The same workflows, the same hardware -- only the runtime changed.
+
+IBM watsonx | March 2026
