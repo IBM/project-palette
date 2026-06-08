@@ -56,18 +56,50 @@ QWEN3_VL = ModelSpec(
     max_tokens=1500,
 )
 # The fine-tuned palette adapter (designer + coder), live on RITS as a LoRA:
-# one endpoint serves base gpt-oss-20b; the `model` field selects the adapter.
+# one endpoint serves the base model; the `model` field selects the adapter.
+#
+# Default migrated 2026-06-05 from gpt-oss-20b base to Qwen2.5-Coder-32B base.
+# The new adapter was trained on the same v3+IBM-merged dataset; the cold-base
+# evaluation and rendered side-by-side comparison showed qwen25 wins on the
+# highest-value treatments (charts, dashboards, multi-card layouts) and ties
+# or marginally loses on a small set of dense single-slide layouts. Trade-off
+# accepted: ~1.5-2x slower inference per token (dense 32B vs MoE 21B/3.6B-
+# active), recovered by RITS-side optimisations (in progress) and worth it
+# for the visual-quality gain.
+#
 # temperature=0.0 — deterministic decoding: reproducible decks, no JSON-syntax
-# sampling slips. The adapter CAN degenerate into stray harmony tool-call
-# tokens -> HTTP 500, but only on weak prompts with nothing to anchor on; real
-# designer/coder prompts are stable at temp 0 (verified 6/6). run_designer and
-# _code_one_slide use a SMALL temperature bump (0.3) on retry to resample out
-# of any rare degeneration — NEVER 1.0, which sends the LoRA off-topic (a temp
-# 1.0 retry turned an IBM-middleware brief into a deck about space launches).
-# Slug/model overridable via env.
+# sampling slips. run_designer and _code_one_slide use a SMALL temperature
+# bump (0.3) on retry to resample out of rare degeneracy — NEVER 1.0, which
+# sends LoRAs off-topic.
+#
+# Slug/model overridable via env. To temporarily roll back to the gpt-oss-20b
+# adapter, set: PALETTE_ADAPTER_SLUG=gpt-oss-20b-palette-lora and
+# PALETTE_ADAPTER_MODEL=palette-gpt-20b.
 PALETTE_ADAPTER = ModelSpec(
-    os.environ.get("PALETTE_ADAPTER_SLUG", "gpt-oss-20b-palette-lora"),
-    os.environ.get("PALETTE_ADAPTER_MODEL", "palette-gpt-20b"),
+    os.environ.get("PALETTE_ADAPTER_SLUG", "qwen2-5-coder-32b-palette-lora"),
+    os.environ.get("PALETTE_ADAPTER_MODEL", "palette-qwen-32b"),
+    max_tokens=24000,
+    temperature=0.0,
+)
+# The OLD fine-tuned palette adapter on gpt-oss-20b base. Kept as a UI option
+# for side-by-side comparisons during the v3_qwen25 migration; the LoRA-on-
+# gpt-oss endpoint is still running on RITS in parallel with the new one.
+PALETTE_ADAPTER_GPT = ModelSpec(
+    "gpt-oss-20b-palette-lora",
+    "palette-gpt-20b",
+    max_tokens=24000,
+    temperature=0.0,
+)
+# Base Qwen2.5-Coder-32B-Instruct (no adapter). Served on the same RITS
+# endpoint as the LoRA — the `model` field selects between the bare base
+# and the adapter. Used as the default editor (geometry-repair) model from
+# 2026-06-05 onward: it's the same family as the palette LoRA, so its
+# diagnoses and rewrites stay in-distribution for the codebase the LoRA
+# produces. Smaller than gpt-oss-120b (32B dense vs 120B reasoning MoE)
+# but more code-specialised and aesthetically closer to our output.
+QWEN_CODER_32B = ModelSpec(
+    "qwen2-5-coder-32b-palette-lora",
+    "Qwen/Qwen2.5-Coder-32B-Instruct",
     max_tokens=24000,
     temperature=0.0,
 )
@@ -76,7 +108,15 @@ LLAMA_70B = ModelSpec("llama-3-3-70b-instruct",
 
 # --- per-role roster -------------------------------------------------------
 # designer + coder run the fine-tuned palette adapter (live on RITS). crafter
-# and editor stay on gpt-oss-120b; critic on Qwen-VL.
+# and editor stay on gpt-oss-120b: the editor role is mostly spatial-geometric
+# diagnostic reasoning over existing JS, and the 120B reasoning MoE is better
+# at that than the 32B code-specialised Qwen. QWEN_CODER_32B remains in
+# CORRECTION_MODELS so it's selectable from the UI for A/B comparison on
+# specific builds, but not the default. critic stays on Qwen-VL.
+# (Considered switching to QWEN_CODER_32B on 2026-06-05 — same family as
+# the adapter — but reverted same day: in this session's logs, gpt-oss-120b
+# was diagnosing geometry correctly; failures were verify-gate misfires,
+# not bad diagnoses. A smaller reasoner would not help those.)
 ROSTER: dict[str, ModelSpec] = {
     "crafter": GPT_OSS_120B,      # Stage 1 — intake -> plan.md
     "designer": PALETTE_ADAPTER,  # Stage 2 — plan.md -> deck brief
@@ -91,10 +131,29 @@ ROSTER: dict[str, ModelSpec] = {
 # for designer+coder. Single-user assumption — the app serialises builds, so
 # per-request roster mutation is safe.
 PLANNER_MODELS = {"gpt-oss-120b": GPT_OSS_120B, "llama-3.3-70b": LLAMA_70B}
-DESIGNER_MODELS = {"palette-lora": PALETTE_ADAPTER,
-                   "gpt-oss-120b": GPT_OSS_120B, "llama-3.3-70b": LLAMA_70B}
-CORRECTION_MODELS = {"gpt-oss-120b": GPT_OSS_120B, "llama-3.3-70b": LLAMA_70B,
-                     "palette-lora": PALETTE_ADAPTER}
+# DESIGNER_MODELS: first entry is the UI default. palette-qwen-32b is the
+# current production LoRA; palette-gpt-20b is the prior LoRA, kept for
+# side-by-side comparison during the v3_qwen25 rollout. The two non-LoRA
+# entries are for ablations / fallbacks. The legacy "palette-lora" alias
+# resolves to the Qwen LoRA so existing API clients keep working.
+DESIGNER_MODELS = {
+    "palette-qwen-32b": PALETTE_ADAPTER,
+    "palette-gpt-20b":  PALETTE_ADAPTER_GPT,
+    "gpt-oss-120b":     GPT_OSS_120B,
+    "llama-3.3-70b":    LLAMA_70B,
+    "palette-lora":     PALETTE_ADAPTER,  # backward-compat alias
+}
+# CORRECTION_MODELS: routes the UI's editor-role dropdown. gpt-oss-120b is
+# the default (better diagnostic reasoner for geometry-repair work).
+# qwen2.5-coder-32b is selectable for A/B comparison.
+CORRECTION_MODELS = {
+    "gpt-oss-120b":      GPT_OSS_120B,
+    "qwen2.5-coder-32b": QWEN_CODER_32B,
+    "llama-3.3-70b":     LLAMA_70B,
+    "palette-qwen-32b":  PALETTE_ADAPTER,
+    "palette-gpt-20b":   PALETTE_ADAPTER_GPT,
+    "palette-lora":      PALETTE_ADAPTER,  # backward-compat alias
+}
 
 
 def apply_models(planner: str = "", designer_coder: str = "",

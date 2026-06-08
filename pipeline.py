@@ -246,6 +246,114 @@ def _strip_branding_assets(src: str) -> str:
     return _BRANDING_LOGO_ADDIMAGE.sub("", src)
 
 
+# Matches `<key>: <value>;` immediately followed by `\s*\n\s*}` — i.e. a stray
+# semicolon at the end of the last property of an object literal. The key must
+# be a real identifier, the value cannot contain commas, braces, semicolons,
+# or newlines (so we never match across multiple properties or across line
+# breaks where the model meant a comma but typed a semicolon mid-block). The
+# `\n\s*\}` tail ensures we only fire when the next token is a closing brace,
+# which is the unambiguous bug signature; we won't touch semicolons inside
+# function bodies, string literals, or `for(;;)` headers.
+_SEMI_AS_PROP_TERM = re.compile(
+    r"(\b[a-zA-Z_$][\w$]*\s*:\s*[^,{};\n]+?);(\s*\n\s*\})"
+)
+
+
+def _fix_semicolon_as_property_terminator(src: str) -> str:
+    """Repair `key: value;` where the `;` is right before the object's closing
+    `}`. Node rejects this with `Unexpected token ';'` at parse time, breaking
+    the whole slide.
+
+    First observed 2026-06-05 in v3_qwen25_combined's palette_demo slide 4:
+    the LoRA emitted `color: palette.muted, charSpacing: 2;` and
+    `color: palette.muted, align: "right";` inside two addText option blocks.
+    Same root cause both times — the model confuses end-of-statement with
+    end-of-property convention. Safe rewrite: drop the `;`.
+    """
+    return _SEMI_AS_PROP_TERM.sub(r"\1\2", src)
+
+
+# Matches a single `slide.addText(<arg>, { <opts> });` call. The first arg
+# tolerates one level of nested parens (e.g. `String(n)`); the opts tolerate
+# one level of nested braces (e.g. `fill: { color: "..." }`). Non-greedy
+# matching prevents one call from swallowing the next.
+_ADDTEXT_CALL = re.compile(
+    r"""slide\.addText\(
+        \s*(?P<arg>(?:[^()]|\([^()]*\))*?)\s*,
+        \s*\{(?P<opts>(?:[^{}]|\{[^{}]*\})*?)\}
+        \s*\)\s*;""",
+    re.VERBOSE | re.DOTALL,
+)
+
+# Extracts each of `x|y|w|h: <expr>` from an options block. The expression
+# stops at the next comma, newline, or closing brace.
+_COORD_KEY = re.compile(r"\b(x|y|w|h)\s*:\s*([^,}\n]+)")
+
+
+def _coords_signature(opts: str) -> tuple | None:
+    """Return a (x, y, w, h) tuple of stripped expression strings, or None
+    if any of the four coords is missing."""
+    found = {}
+    for m in _COORD_KEY.finditer(opts):
+        found[m.group(1)] = m.group(2).strip()
+    if not all(k in found for k in ("x", "y", "w", "h")):
+        return None
+    return (found["x"], found["y"], found["w"], found["h"])
+
+
+def _fix_redundant_addtext_at_same_coords(src: str) -> str:
+    """Drop redundant `slide.addText(...)` calls that share `x/y/w/h` with a
+    later call but have a different first argument.
+
+    LoRA bug observed 2026-06-05 in v3_qwen25_combined's cuga_hackathon slide
+    8 (`Policies — agent guardrails`): the model emitted a plain-text addText
+    for the syntax-coloured code panel, immediately followed by a rich-text-
+    runs addText at the same x/y/w/h. Both calls rendered on top of each
+    other and every line appeared doubled. The detector caught the overlaps;
+    the editor's fix removed the redundant call but the verify gate then
+    reverted because the deduplication halved textlen and tripped the
+    content-preservation check.
+
+    Strategy:
+      - find every slide.addText(arg, {opts}) block in the file
+      - extract each block's coordinate signature (x, y, w, h) from opts
+      - if an earlier block's coords match a later block's AND the first
+        arguments differ, drop the earlier one
+    Same coords + same first arg leaves both intact (rare but plausibly
+    intentional). Same coords + different first arg is the bug signature.
+    """
+    blocks: list[tuple[int, int, tuple, str]] = []
+    for m in _ADDTEXT_CALL.finditer(src):
+        sig = _coords_signature(m.group("opts"))
+        if sig is None:
+            continue
+        blocks.append((m.start(), m.end(), sig, m.group("arg").strip()))
+
+    drop_indices: set[int] = set()
+    for i in range(len(blocks)):
+        for j in range(i + 1, len(blocks)):
+            if blocks[i][2] == blocks[j][2] and blocks[i][3] != blocks[j][3]:
+                drop_indices.add(i)
+                break
+
+    if not drop_indices:
+        return src
+
+    # Splice removals in reverse order so earlier (still-original) spans stay
+    # valid as later spans drop out.
+    out = src
+    for i in sorted(drop_indices, reverse=True):
+        s, e, _, _ = blocks[i]
+        # Trim a trailing newline + leading-of-next-line whitespace so the
+        # rewrite doesn't leave a blank line where the call used to be.
+        while e < len(out) and out[e] in " \t":
+            e += 1
+        if e < len(out) and out[e] == "\n":
+            e += 1
+        out = out[:s] + out[e:]
+    return out
+
+
 def _apply_deterministic_js_fixes(js_dir: Path, *,
                                   include_branding_assets: bool = True) -> None:
     """Tier-1 deterministic fixes on generated slide JS — known categorical
@@ -255,6 +363,11 @@ def _apply_deterministic_js_fixes(js_dir: Path, *,
       - asset-path remap: a hallucinated/misnamed assets/ path -> a real file
       - highlight-split bug:   `<L>.replace(<F>, "")` + bold-<F> fragment
                                -> _hSplit(<L>, <F>, normalOpt, accentOpt)
+      - semicolon-as-property-terminator (v3_qwen25_combined):
+                               `key: value;}` -> `key: value}`
+      - redundant addText at same coords (v3_qwen25_combined):
+                               two slide.addText calls at the same x/y/w/h
+                               with different first args -> drop the first
       - branding-asset strip (opt-in via include_branding_assets=False):
                                remove `slide.addImage({path: "assets/logos/..."})`
     Bugs a regex cannot safely fix (apostrophe quoting, addText string arrays)
@@ -270,6 +383,8 @@ def _apply_deterministic_js_fixes(js_dir: Path, *,
             fixed)
         fixed = _fix_highlight_split_bug(fixed)
         fixed = _fix_adjacent_runs_missing_space(fixed)
+        fixed = _fix_semicolon_as_property_terminator(fixed)
+        fixed = _fix_redundant_addtext_at_same_coords(fixed)
         if not include_branding_assets:
             fixed = _strip_branding_assets(fixed)
         if fixed != src:

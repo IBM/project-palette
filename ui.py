@@ -288,15 +288,18 @@ select{font-family:inherit;font-size:12px;padding:5px 8px;border-radius:7px;
       </select></label>
     <label>Designer + Coder
       <select id="mDesigner">
-        <option value="palette-lora">Palette LoRA</option>
+        <option value="palette-qwen-32b">Palette LoRA (Qwen2.5-Coder-32B)</option>
+        <option value="palette-gpt-20b">Palette LoRA (gpt-oss-20b)</option>
         <option value="gpt-oss-120b">gpt-oss-120b</option>
         <option value="llama-3.3-70b">Llama-3.3-70B</option>
       </select></label>
     <label>Critic
       <select id="mCritic">
         <option value="gpt-oss-120b">gpt-oss-120b</option>
+        <option value="qwen2.5-coder-32b">Qwen2.5-Coder-32B (base)</option>
         <option value="llama-3.3-70b">Llama-3.3-70B</option>
-        <option value="palette-lora">Palette LoRA (experimental)</option>
+        <option value="palette-qwen-32b">Palette LoRA (Qwen2.5-Coder-32B) — experimental</option>
+        <option value="palette-gpt-20b">Palette LoRA (gpt-oss-20b) — experimental</option>
       </select></label>
     <div class="hint">Changes apply to your next build.</div>
   </div>
