@@ -4,3 +4,6 @@ httpx
 pydantic
 pdfplumber
 python-multipart
+python-docx
+python-pptx
+pymupdf

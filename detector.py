@@ -288,6 +288,80 @@ def _crowded_text(L):
     return hits
 
 
+def _fitz_colocated_overlaps(pdf_path: Path, page_no: int, existing):
+    """G7 additive pass — catch two text draws at the SAME anchor that
+    pdfplumber merges into one garbled line (so the text-on-text overlap check
+    sees one line and misses it). PyMuPDF keeps them as separate spans, so the
+    same overlap criterion fires. Returns (a, b) line-dict pairs (same shape as
+    the pdfplumber `overlaps` entries) NOT already in `existing`.
+
+    GUARDED: if PyMuPDF is unavailable, returns [] and the detector is exactly
+    the pdfplumber detector — zero behaviour change. Gated to FP=0 on the
+    49-slide qwen sweep: cross-line spans only (same-line spans are intentional
+    rich-text runs), baselines coincide (Δtop<0.12), similar font size
+    (height-ratio>0.6), and substantial coverage of the smaller span (>0.40) —
+    which suppresses the big-numeral-near-caption marginal class."""
+    try:
+        import fitz  # PyMuPDF
+    except Exception:
+        return []
+    try:
+        doc = fitz.open(str(pdf_path))
+        page = doc[page_no - 1]
+        spans = []
+        for blk in page.get_text("dict")["blocks"]:
+            for line in blk.get("lines", []):
+                for sp in line.get("spans", []):
+                    t = sp["text"].strip()
+                    if not t:
+                        continue
+                    x0, y0, x1, y1 = (c / 72.0 for c in sp["bbox"])
+                    spans.append({"text": t, "x0": x0, "x1": x1, "top": y0,
+                                  "bottom": y1, "_line": id(line)})
+        doc.close()
+    except Exception:
+        return []
+
+    def _bb(p, q):
+        """Do bboxes p and q meaningfully intersect?"""
+        ox = min(p["x1"], q["x1"]) - max(p["x0"], q["x0"])
+        oy = min(p["bottom"], q["bottom"]) - max(p["top"], q["top"])
+        return ox > 0 and oy > 0 and ox * oy > 0.02
+
+    def _dup(a, b, pairs):
+        # same defect if each member overlaps a member of an existing pair —
+        # bbox-based so it matches even when the two sources extracted the
+        # text differently (pdfplumber merges, PyMuPDF splits).
+        for c, d in pairs:
+            if (_bb(a, c) and _bb(b, d)) or (_bb(a, d) and _bb(b, c)):
+                return True
+        return False
+
+    out = []
+    for i in range(len(spans)):
+        for j in range(i + 1, len(spans)):
+            a, b = spans[i], spans[j]
+            if a["_line"] == b["_line"]:
+                continue  # intentional adjacent rich-text runs, not an overlap
+            ox = min(a["x1"], b["x1"]) - max(a["x0"], b["x0"])
+            oy = min(a["bottom"], b["bottom"]) - max(a["top"], b["top"])
+            if ox <= 0.10 or oy <= 0:
+                continue
+            ia = ox * oy
+            if ia <= 0.012:
+                continue
+            ha, hb = a["bottom"] - a["top"], b["bottom"] - b["top"]
+            amin = min((a["x1"] - a["x0"]) * ha, (b["x1"] - b["x0"]) * hb)
+            ratio = ia / amin if amin > 0 else 0.0
+            dtop = abs(a["top"] - b["top"])
+            hratio = min(ha, hb) / max(ha, hb) if max(ha, hb) > 0 else 0.0
+            if dtop < 0.12 and hratio > 0.6 and ratio > 0.40:
+                if _dup(a, b, existing) or _dup(a, b, out):
+                    continue
+                out.append((a, b))
+    return out
+
+
 def _detect(pdf_path: Path, page_no: int):
     """Run the deterministic detection. Returns
     (W, H, L, overlaps, glyph_hits, overflow, oc): W/H the canvas in inches,
@@ -404,6 +478,12 @@ def _detect(pdf_path: Path, page_no: int):
         if max(dy_bot, dy_top) > 0.12:
             overflow.append((A, run, dy_top, dy_bot))
 
+    # G7 — additive PyMuPDF pass: catch co-located text draws that pdfplumber
+    # merges into one garbled line (invisible to the text-on-text check above).
+    # Additive + guarded: never removes a pdfplumber finding, no-op if PyMuPDF
+    # is missing.
+    overlaps.extend(_fitz_colocated_overlaps(pdf_path, page_no, overlaps))
+
     # Four additional checks the original four were blind to:
     under_shape = _text_under_shape(L, R, W, H)
     timeline_hits = _timeline_collisions(L, R)
@@ -424,6 +504,12 @@ def geometry_facts(pdf_path: Path, page_no: int) -> str:
 
     out = [f"Canvas: {W:.2f}in wide x {H:.2f}in tall. Units below are inches.",
            ""]
+    if sum(len(ln["text"]) for ln in L) < 15:
+        # <15 chars = effectively no text — a silent render failure (valid JS
+        # that drew nothing). Kept tight: a one-line divider/closing slide runs
+        # ~40-60 chars and is legitimately sparse, not blank.
+        out.insert(1, "WARNING: slide is BLANK or near-empty — likely a silent "
+                      "render failure (valid JS that drew nothing). Inspect.")
     out.append(f"OVERLAPPING TEXT REGIONS ({len(overlaps)} pair(s) collide):")
     for a, b in overlaps[:14]:
         out.append(f"  \"{a['text'][:34]}\" [x {a['x0']:.2f}-{a['x1']:.2f}, "

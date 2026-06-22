@@ -78,7 +78,13 @@ QWEN3_VL = ModelSpec(
 PALETTE_ADAPTER = ModelSpec(
     os.environ.get("PALETTE_ADAPTER_SLUG", "qwen2-5-coder-32b-palette-lora"),
     os.environ.get("PALETTE_ADAPTER_MODEL", "palette-qwen-32b"),
-    max_tokens=24000,
+    # 32K total context on the Qwen2.5 endpoint and RITS rejects upfront when
+    # input_tokens + max_tokens > 32768 (verified 2026-06-11 by capturing a
+    # 400 body on a 17K-char Education plan: "8769 input + 24000 output =
+    # 32769 > 32768"). 16000 leaves 16768 input-token budget — fits all
+    # observed plans, and real designer output tops out near 16K tokens
+    # anyway (P95 of 47 successful Qwen Education runs: 15.8K).
+    max_tokens=16000,
     temperature=0.0,
 )
 # The OLD fine-tuned palette adapter on gpt-oss-20b base. Kept as a UI option

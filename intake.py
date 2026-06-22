@@ -2,8 +2,11 @@
 consumes. One unified path handles all three input situations: a vague
 request, a request plus source documents, or an already-rough plan.
 
-Source documents (PDF / DOCX / PPTX) are parsed with docling — IBM Research's
-layout-aware document converter — which yields clean Markdown.
+Source documents are parsed with lightweight per-type extractors: python-docx
+for DOCX, pdfplumber for PDF, python-pptx for PPTX (slide-aware). Plain
+.md / .txt are read directly. These keep the deployed container lean (no
+torch / layout models) at the cost of layout-model table parsing, which the
+prose / business-doc intake case doesn't need.
 """
 from __future__ import annotations
 
@@ -147,13 +150,66 @@ def _pptx_to_text(path: Path) -> str:
     return "\n".join(parts).strip()
 
 
+def _docx_to_text(path: Path) -> str:
+    """Walk a DOCX in document order and emit text. Headings become `## `
+    Markdown so the crafter sees the author's section structure; tables become
+    `cell | cell` rows. python-docx (a tiny pure-Python dep) is used rather
+    than docling: business / prose docs don't need layout-model parsing, and
+    avoiding docling keeps the deployed container lean (no torch + layout
+    models) and cold-start fast.
+
+    The simple `.paragraphs` / `.tables` accessors lose document order
+    (all paragraphs, then all tables), so we iterate the body's child
+    elements directly -- the canonical python-docx recipe for in-order walk."""
+    from docx import Document
+    from docx.oxml.table import CT_Tbl
+    from docx.oxml.text.paragraph import CT_P
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    doc = Document(str(path))
+    parts: list[str] = []
+    for child in doc.element.body.iterchildren():
+        if isinstance(child, CT_P):
+            para = Paragraph(child, doc)
+            text = para.text.strip()
+            if not text:
+                continue
+            style = (para.style.name or "") if para.style else ""
+            parts.append(f"## {text}" if style.startswith("Heading") else text)
+        elif isinstance(child, CT_Tbl):
+            table = Table(child, doc)
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells]
+                parts.append(" | ".join(cells))
+    return "\n\n".join(parts).strip()
+
+
+def _pdf_to_text(path: Path) -> str:
+    """Extract text from a PDF page-by-page with pdfplumber (already a
+    dependency for the geometry detector). Emits `--- page N ---` boundaries
+    so a multi-page source keeps its structure. Lighter than docling; good
+    enough for prose / report PDFs, which is the common intake case."""
+    import pdfplumber
+    parts: list[str] = []
+    with pdfplumber.open(str(path)) as pdf:
+        for i, page in enumerate(pdf.pages, 1):
+            text = (page.extract_text() or "").strip()
+            if not text:
+                continue
+            parts.append(f"--- page {i} ---")
+            parts.append(text)
+            parts.append("")
+    return "\n".join(parts).strip()
+
+
 def parse_document(path: Path) -> tuple[str, str]:
-    """Any supported document -> (filename, markdown text).
+    """Any supported document -> (filename, extracted text).
 
     PPTX uses a slide-aware walker that emits `--- slide N ---` boundaries
-    so the transcribe crafter can count source slides. PDF / DOCX go through
-    docling (layout-aware, outputs Markdown with reading order and tables
-    preserved). Plain .md / .txt are read directly.
+    so the transcribe crafter can count source slides. DOCX is parsed with
+    python-docx (headings -> `## `, tables -> `cell | cell`), PDF with
+    pdfplumber (page boundaries). Plain .md / .txt are read directly.
     """
     path = Path(path)
     suffix = path.suffix.lower()
@@ -161,20 +217,40 @@ def parse_document(path: Path) -> tuple[str, str]:
         return path.name, path.read_text(errors="replace")
     if suffix == ".pptx":
         return path.name, _pptx_to_text(path)
-    from docling.document_converter import DocumentConverter
-    result = DocumentConverter().convert(str(path))
-    return path.name, result.document.export_to_markdown()
+    if suffix == ".docx":
+        return path.name, _docx_to_text(path)
+    if suffix == ".pdf":
+        return path.name, _pdf_to_text(path)
+    raise ValueError(
+        f"unsupported source type {suffix!r} for {path.name} "
+        "(supported: .md .txt .docx .pdf .pptx)")
 
 
 def craft_plan(request: str, source_paths: list[Path] | None = None) -> str:
     """Turn a request (plus any uploaded source documents) into a plan.md."""
     source_texts: list[tuple[str, str]] = []
+    parse_errors: list[str] = []
     for sp in source_paths or []:
         try:
-            source_texts.append(parse_document(sp))
-            log.info("parsed source: %s", Path(sp).name)
-        except Exception as e:  # noqa: BLE001 — a bad upload shouldn't abort
+            name, text = parse_document(sp)
+            if not text.strip():
+                raise ValueError("parsed but yielded no text")
+            source_texts.append((name, text))
+            log.info("parsed source: %s (%d chars)", Path(sp).name, len(text))
+        except Exception as e:  # noqa: BLE001
+            parse_errors.append(f"{Path(sp).name}: {e}")
             log.warning("failed to parse %s: %s", sp, e)
+
+    # If the user uploaded sources but NONE parsed, fail loudly. Silently
+    # continuing makes the crafter invent a plan from the request string
+    # alone -- which reads to the user as "the planner hallucinated something
+    # completely different" rather than "your upload couldn't be read".
+    if (source_paths and not source_texts):
+        raise RuntimeError(
+            "could not read any uploaded source document -- "
+            + "; ".join(parse_errors)
+            + ". Check that the file type is supported (.docx .pdf .pptx "
+            ".md .txt) and that the parsing dependencies are installed.")
 
     transcribe = _is_deck_source(source_paths or [])
     if transcribe:
