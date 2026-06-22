@@ -117,35 +117,161 @@ def _is_deck_source(paths: list[Path]) -> bool:
     return any(p.suffix.lower() in _DECK_SUFFIXES for p in paths)
 
 
+def _chart_to_text(chart) -> list[str]:
+    """Extract a NATIVE pptx chart's data as text — works for every chart
+    family, not just bar.
+
+    Two data models cover all chart types:
+      - category charts (bar/column, line, area, pie, doughnut, radar):
+        one shared category axis + one or more named series of values.
+        Emitted as a header row of categories + one row per series.
+      - XY charts (scatter, bubble): no categories; each series is a set of
+        (x, y[, size]) points. Emitted as point tuples per series.
+    The leading `[chart: <type>]` line names the source shape so the
+    transcribe crafter can map it to the right `[[render as a … chart]]`
+    treatment (bar→bar chart, line→line chart, pie/doughnut→donut, etc.)."""
+    out: list[str] = []
+    try:
+        ctype = str(chart.chart_type)
+    except Exception:  # noqa: BLE001
+        ctype = "unknown"
+    out.append(f"[chart: {ctype}]")
+    try:
+        title = chart.chart_title.text_frame.text.strip() if chart.has_title else ""
+        if title:
+            out.append(f"chart title: {title}")
+    except Exception:  # noqa: BLE001
+        pass
+
+    # XY / bubble charts have no categories — detect via the plot/series shape.
+    is_xy = "XY" in ctype or "SCATTER" in ctype or "BUBBLE" in ctype
+    try:
+        if is_xy:
+            for s in chart.series:
+                xs = list(getattr(s, "values", []) or [])
+                pts = ", ".join(str(v) for v in xs)
+                out.append(f"series {getattr(s, 'name', '') or '?'}: {pts}")
+        else:
+            cats = []
+            if chart.plots:
+                cats = [str(c) for c in (chart.plots[0].categories or [])]
+            if cats:
+                out.append("categories: " + " | ".join(cats))
+            for s in chart.series:
+                vals = " | ".join(str(v) for v in (list(s.values) or []))
+                out.append(f"{getattr(s, 'name', '') or 'series'}: {vals}")
+    except Exception as e:  # noqa: BLE001 — a malformed chart shouldn't abort
+        out.append(f"(chart data unreadable: {e})")
+    return out
+
+
+def _shape_lines(sh) -> list[str]:
+    """Text/data lines for ONE shape. Recurses into groups; extracts charts;
+    leaves a placeholder for pictures so a visual-only slide is not silently
+    empty. Decorative auto-shapes with no text yield nothing."""
+    st = getattr(sh, "shape_type", None)
+    # GROUP (6) — python-pptx's slide.shapes does NOT recurse, so a process
+    # flow / SmartArt / arrow chain (almost always grouped) would lose ALL its
+    # text. Recurse, preserving the same row-band/column ordering inside.
+    if st == 6:
+        out: list[str] = []
+        for child in _ordered(sh.shapes):
+            out += _shape_lines(child)
+        return out
+    if sh.has_text_frame:
+        return [ln for para in sh.text_frame.paragraphs
+                if (ln := "".join(r.text for r in para.runs).strip())]
+    if st == 19:  # TABLE
+        return [" | ".join(c.text.strip() for c in row.cells)
+                for row in sh.table.rows]
+    if st == 3 and getattr(sh, "has_chart", False):  # CHART
+        return _chart_to_text(sh.chart)
+    if st == 13:  # PICTURE
+        # Only a sizeable picture is content worth a placeholder. Logos, icons,
+        # and decorative marks are small and typically repeat on every slide
+        # (the IBM logo is ~1.0x0.4in) — emitting a placeholder for those puts
+        # "[image …]" on every slide, which is noise. A genuine figure /
+        # diagram / screenshot occupies real estate, so gate on size.
+        w = (sh.width or 0) / 914400.0
+        h = (sh.height or 0) / 914400.0
+        if w >= 2.5 and h >= 1.5:
+            alt = (getattr(sh, "name", "") or "").strip()
+            return [f"[image: {alt}]" if alt else "[image]"]
+        return []  # logo / icon / decoration → drop
+    return []
+
+
+_GUTTER_EMU = 137160  # ~0.15in — min gap between shapes to count as a cut
+
+
+def _widest_gap(boxes, axis):
+    """Largest gutter along `axis` ('h' = y-gaps, 'v' = x-gaps) and the index
+    (into the axis-sorted list) where it splits. A box's running far-edge is
+    carried forward so a tall/wide box correctly bridges (suppresses) gaps it
+    spans — which is how a full-width title/footer prevents a spurious column
+    cut."""
+    lo, hi = ("y0", "y1") if axis == "h" else ("x0", "x1")
+    ordered = sorted(boxes, key=lambda b: b[lo])
+    best_gap, best_idx = 0, None
+    running = ordered[0][hi]
+    for i, b in enumerate(ordered[1:], 1):
+        gap = b[lo] - running
+        if gap > best_gap:
+            best_gap, best_idx = gap, i
+        running = max(running, b[hi])
+    return best_gap, best_idx, ordered
+
+
+def _xy_cut(boxes):
+    """Recursive XY-cut reading order: at each step cut at the SINGLE widest
+    gutter across both axes (ties → horizontal), then recurse each half. Full-
+    width headers/footers bridge column gaps so they peel off as their own
+    band first, leaving clean columns underneath — which keeps side-by-side
+    content (slide-4 list+code-panel, slide-2 01/02/03 badge columns) read
+    column-by-column instead of interleaved."""
+    if len(boxes) <= 1:
+        return list(boxes)
+    gh, ih, oh = _widest_gap(boxes, "h")
+    gv, iv, ov = _widest_gap(boxes, "v")
+    if max(gh, gv) <= _GUTTER_EMU:             # no real gutter → reading order
+        return sorted(boxes, key=lambda b: (b["y0"], b["x0"]))
+    if gh >= gv:
+        first, second = oh[:ih], oh[ih:]
+    else:
+        first, second = ov[:iv], ov[iv:]
+    return _xy_cut(first) + _xy_cut(second)
+
+
+def _ordered(shapes):
+    """Shapes in human reading order via XY-cut (handles multi-column slides).
+    Shapes without a position are dropped (decoration / off-slide)."""
+    boxes = []
+    for s in shapes:
+        if getattr(s, "top", None) is None or getattr(s, "left", None) is None:
+            continue
+        x0, y0 = int(s.left), int(s.top)
+        boxes.append({"x0": x0, "y0": y0,
+                      "x1": x0 + int(s.width or 0),
+                      "y1": y0 + int(s.height or 0), "sh": s})
+    if not boxes:
+        return []
+    return [b["sh"] for b in _xy_cut(boxes)]
+
+
 def _pptx_to_text(path: Path) -> str:
     """Walk a PPTX slide-by-slide and emit text with explicit
-    `--- slide N ---` boundaries. Docling flattens decks into a single
-    Markdown stream with no slide boundaries, which makes the transcribe
-    crafter unable to count source slides; this path preserves them.
-
-    Reading order within a slide is left-to-right, top-to-bottom by shape
-    position -- close enough for the transcribe crafter's purposes, and
-    matches what the model expects from exemplar 3."""
+    `--- slide N ---` boundaries (so the transcribe crafter can count source
+    slides). Captures every CONTENT-bearing shape type — text boxes, tables,
+    native charts (all families, with data), grouped shapes (recursed), and a
+    placeholder for pictures — dropping only decoration. Reading order is
+    top-to-bottom, left-to-right by shape position."""
     from pptx import Presentation
     prs = Presentation(str(path))
     parts: list[str] = []
     for i, slide in enumerate(prs.slides, 1):
         parts.append(f"--- slide {i} ---")
-        shapes = sorted(
-            (s for s in slide.shapes if getattr(s, "top", None) is not None),
-            key=lambda s: (int((s.top or 0) // 100000),  # row band
-                           int((s.left or 0) // 100000)),  # then column
-        )
-        for sh in shapes:
-            if sh.has_text_frame:
-                for para in sh.text_frame.paragraphs:
-                    line = "".join(r.text for r in para.runs).strip()
-                    if line:
-                        parts.append(line)
-            elif getattr(sh, "shape_type", None) == 19:  # TABLE
-                for row in sh.table.rows:
-                    cells = [c.text.strip() for c in row.cells]
-                    parts.append(" | ".join(cells))
+        for sh in _ordered(slide.shapes):
+            parts += _shape_lines(sh)
         parts.append("")  # blank line between slides
     return "\n".join(parts).strip()
 
