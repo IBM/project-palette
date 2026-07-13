@@ -10,6 +10,7 @@ overflow, and off-canvas elements.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pdfplumber
@@ -590,7 +591,256 @@ def geometry_facts(pdf_path: Path, page_no: int) -> str:
                    f"{gap:.3f}in vertical gap — visually touching")
     if not crowded:
         out.append("  (none)")
+    out.append("")
+    manifest_hits = _manifest_collisions(_manifest_path_for(pdf_path), page_no)
+    out.append(f"TEXT COLLIDING WITH A SHAPE ({len(manifest_hits)} — exact, from "
+               f"the draw manifest):")
+    for t, s, cls, ratio in manifest_hits[:10]:
+        tb, sb = _mbox(t), _mbox(s)
+        if not tb or not sb:
+            continue
+        why = ("is hidden behind the shape (the shape is drawn on top of it)"
+               if cls == "occluded"
+               else f"is the same color as the {s.get('fill')} shape it sits on "
+                    f"— the text is invisible there")
+        out.append(f"  \"{(t.get('text') or '')[:34]}\" "
+                   f"[x {tb[0]:.2f}-{tb[2]:.2f}, y {tb[1]:.2f}-{tb[3]:.2f}] "
+                   f"{why}; {int(ratio * 100)}% overlaps the {s.get('kind')} "
+                   f"at [x {sb[0]:.2f}-{sb[2]:.2f}, y {sb[1]:.2f}-{sb[3]:.2f}]")
+    if not manifest_hits:
+        out.append("  (none)")
     return "\n".join(out)
+
+
+def _manifest_path_for(pdf_path: Path) -> Path:
+    """The render drops elements.json (the exact per-slide draw manifest) next
+    to the pptx/pdf. Same dir as the PDF the detector reads."""
+    return Path(pdf_path).parent / "elements.json"
+
+
+def _mbox(e: dict):
+    """(x0, y0, x1, y1) in inches from a manifest element, or None if the
+    element didn't declare a full box."""
+    x, y, w, h = e.get("x"), e.get("y"), e.get("w"), e.get("h")
+    if any(v is None for v in (x, y, w, h)):
+        return None
+    try:
+        x, y, w, h = float(x), float(y), float(w), float(h)
+    except (TypeError, ValueError):
+        return None
+    return (x, y, x + abs(w), y + abs(h))
+
+
+def _glyph_box(t: dict):
+    """A text element's DECLARED box shrunk to an estimate of the actual glyph
+    extent. Declared text boxes are usually full-column-width (w up to ~11.7in)
+    while the words occupy only a fraction, so the raw box over-reports where the
+    text is — a top-right corner icon 'overlaps' a left-aligned eyebrow's full-
+    width box even though the glyphs are far to the left. Estimate glyph width
+    from char-count x fontSize (~0.6 em average advance for proportional sans)
+    and anchor it by the element's alignment. Falls back to the declared box when
+    there's no fontSize/text to estimate from. Returns (x0, y0, x1, y1) or None.
+    """
+    b = _mbox(t)
+    if not b:
+        return None
+    x0, y0, x1, y1 = b
+    txt = (t.get("text") or "").strip()
+    try:
+        fs = float(t.get("fontSize"))
+    except (TypeError, ValueError):
+        return b
+    if not txt or fs <= 0:
+        return b
+    est = min(x1 - x0, len(txt) * fs / 72.0 * 0.6 + 0.1)
+    align = (t.get("align") or "left")
+    if align == "center":
+        cx = (x0 + x1) / 2
+        return (cx - est / 2, y0, cx + est / 2, y1)
+    if align == "right":
+        return (x1 - est, y0, x1, y1)
+    return (x0, y0, x0 + est, y1)
+
+
+def _manifest_collisions(manifest_path: Path, slide_n: int):
+    """Exact text-occlusion collisions from the render manifest — the check
+    that pixel-archaeology can't do reliably on hand-drawn charts.
+
+    A text element whose box overlaps a FILLED shape (rect/ellipse) drawn AFTER
+    it is occluded by that shape — the hero-behind-bar, bar-over-eyebrow,
+    annotation-over-plot class. The geometry is exact (resolved inch coords from
+    the draw call), so no region clustering or font-height guessing is needed.
+
+    Draw order is the precision key, not a threshold: a shape drawn BEFORE the
+    text (text sits on top — a value label on a bar, a title on a panel, a label
+    on a cylinder) is intentional and skipped; only a shape drawn ON TOP of text
+    hides it and is flagged. The only tolerance is a sub-pixel graze floor so an
+    incidental edge-touch isn't reported.
+
+    Returns [(text_el, shape_el, occluded_ratio), ...]. Empty if no manifest.
+    """
+    try:
+        m = json.loads(Path(manifest_path).read_text())
+    except (OSError, ValueError):
+        return []
+    els = m.get(str(slide_n)) or []
+    texts = [e for e in els
+             if e.get("kind") == "text" and (e.get("text") or "").strip()]
+    shapes = [e for e in els
+              if e.get("kind") in ("rect", "ellipse") and e.get("fill")]
+
+    def _norm(c):
+        return c.lstrip("#").upper() if isinstance(c, str) else None
+
+    hits = []
+    for t in texts:
+        tb = _mbox(t)
+        if not tb:
+            continue
+        t_area = max((tb[2] - tb[0]) * (tb[3] - tb[1]), 1e-6)
+        t_order = t.get("order") or 0
+        # every color this text draws in — outer option plus each rich-text run
+        t_colors = {_norm(t.get("color"))}
+        for r in (t.get("runs") or []):
+            t_colors.add(_norm(r.get("color")))
+        t_colors.discard(None)
+        for s in shapes:
+            sb = _mbox(s)
+            if not sb:
+                continue
+            ox = min(tb[2], sb[2]) - max(tb[0], sb[0])
+            oy = min(tb[3], sb[3]) - max(tb[1], sb[1])
+            if ox <= 0 or oy <= 0:
+                continue
+            area = ox * oy
+            # sub-pixel graze floor — not a semantic threshold, just noise cut
+            if area < 0.02 or (area / t_area < 0.08 and min(ox, oy) < 0.05):
+                continue
+            s_fill = _norm(s.get("fill"))
+            if (s.get("order") or 0) > t_order:
+                cls = "occluded"      # shape drawn on top hides the text
+            elif s_fill and s_fill in t_colors:
+                cls = "same_color"    # text on top, same color as fill → invisible
+            else:
+                continue              # text on top, contrasting → intentional
+            hits.append((t, s, cls, round(area / t_area, 2)))
+            break  # one collision per text element is enough to flag it
+    return hits
+
+
+def _manifest_placement_collisions(manifest_path: Path, slide_n: int):
+    """Additive element-placement collisions from the render manifest — the
+    classes both the pixel/PDF path and the text-vs-filled-shape occlusion
+    check (`_manifest_collisions`) structurally miss:
+
+      icon_over_text     an image (Carbon icon) landing on text — an icon
+                         dropped on an agenda number, an eyebrow, or a
+                         headline (agenda badges, stray corner icons). The PDF
+                         detector never extracts images, so it is blind to this.
+      rule_strikethrough a THIN filled shape (accent rule / divider, h<0.12)
+                         cutting through a text line's vertical interior — an
+                         eyebrow or headline struck out by its own accent bar.
+                         `_manifest_collisions`' graze floor drops these because
+                         a thin bar's overlap area is tiny; the PDF path's
+                         `_text_under_shape` skips any shape with rh<0.12.
+      text_crowd         two body-text elements in the same column whose
+                         declared boxes bleed into each other vertically —
+                         stacked mega-stats/captions colliding, which the PDF
+                         text-overlap pass suppresses on big-numeral slides.
+
+    Exact inch coords from the draw call, so no font-height guessing. Kept
+    SEPARATE from `_manifest_collisions` so that check's tuning is untouched;
+    this only ever ADDS hits. Returns a flat list of (a, b, cls, metric)
+    tuples; empty if no manifest.
+    """
+    try:
+        m = json.loads(Path(manifest_path).read_text())
+    except (OSError, ValueError):
+        return []
+    els = m.get(str(slide_n)) or []
+    texts = [e for e in els
+             if e.get("kind") == "text" and (e.get("text") or "").strip()]
+    images = [e for e in els if e.get("kind") == "image" and _mbox(e)]
+    thin = [e for e in els
+            if e.get("kind") in ("rect", "ellipse", "line") and e.get("fill")
+            and _mbox(e) and (_mbox(e)[3] - _mbox(e)[1]) < 0.12]
+
+    def _ov(a, b):
+        return (min(a[2], b[2]) - max(a[0], b[0]),   # ox
+                min(a[3], b[3]) - max(a[1], b[1]))    # oy
+
+    hits = []
+
+    # 1) icon (image) landing on a text box — real 2D overlap, and the icon
+    #    meaningfully lands on the text (not an incidental corner graze). Uses
+    #    the glyph extent, not the declared box, so a corner icon over a full-
+    #    width eyebrow's empty right end doesn't false-positive.
+    for im in images:
+        ib = _mbox(im)
+        icon_area = max((ib[2] - ib[0]) * (ib[3] - ib[1]), 1e-6)
+        for t in texts:
+            tb = _glyph_box(t)
+            if not tb:
+                continue
+            ox, oy = _ov(ib, tb)
+            if ox > 0.04 and oy > 0.04 and (ox * oy) / icon_area > 0.15:
+                hits.append((im, t, "icon_over_text",
+                             round((ox * oy) / icon_area, 2)))
+                break
+
+    # 2) thin accent rule / divider whose y-center sits INSIDE a text line's
+    #    interior band (a strike-through), with real horizontal overlap. The
+    #    interior test (not the edge) is what separates "bar drawn through the
+    #    eyebrow" from "bar correctly resting just below the headline".
+    for s in thin:
+        sb = _mbox(s)
+        s_yc = (sb[1] + sb[3]) / 2
+        for t in texts:
+            tb = _glyph_box(t)
+            if not tb:
+                continue
+            th = tb[3] - tb[1]
+            if th <= 0:
+                continue
+            ox, _ = _ov(sb, tb)
+            if ox > 0.10 and (tb[1] + 0.15 * th) < s_yc < (tb[3] - 0.15 * th):
+                hits.append((s, t, "rule_strikethrough", round(ox, 2)))
+                break
+
+    # 3) stacked body text whose glyph boxes overlap vertically in the same
+    #    column — real horizontal coincidence AND meaningful vertical bleed.
+    tb_boxes = [(t, _glyph_box(t)) for t in texts if _glyph_box(t)]
+    for i in range(len(tb_boxes)):
+        (a, ab) = tb_boxes[i]
+        for j in range(i + 1, len(tb_boxes)):
+            (b, bb) = tb_boxes[j]
+            ox, oy = _ov(ab, bb)
+            # 0.12in vertical floor: below this, an overlap is usually just a
+            # generously-sized multi-line box (e.g. a timeline title over its
+            # sublabel), not a real collision. Genuine stat/caption crowding
+            # runs 0.15in+. ox>0.5 keeps it to same-column glyph overlap.
+            if ox > 0.5 and oy > 0.12:
+                hits.append((a, b, "text_crowd", round(oy, 2)))
+                break
+    return hits
+
+
+# Placement-collision classes the qwen repair editor reliably REVERTS (verify
+# sees no improvement → reverts). Attempting a full-slide rewrite for them is
+# minutes of wasted teacher time with an identical finalized deck. rule_
+# strikethrough is NOT here — qwen fixes it ~60% of the time, so it stays
+# repairable. The gate uses `always_revert_count` to skip repair on slides whose
+# ONLY defects are these, while still flagging them in `defect_summary`.
+ALWAYS_REVERT_CLASSES = ("icon_over_text", "text_crowd")
+
+
+def always_revert_count(pdf_path: Path, page_no: int) -> int:
+    """How many of a slide's defects are placement collisions in the always-
+    revert classes. Subtract from the total defect count to decide whether a
+    slide has any REPAIRABLE defect worth a teacher rewrite. Detection and
+    flagging are unaffected — these still count in `defect_summary`."""
+    hits = _manifest_placement_collisions(_manifest_path_for(pdf_path), page_no)
+    return sum(1 for h in hits if h[2] in ALWAYS_REVERT_CLASSES)
 
 
 def defect_summary(pdf_path: Path, page_no: int) -> dict:
@@ -604,9 +854,13 @@ def defect_summary(pdf_path: Path, page_no: int) -> dict:
     """
     (_, _, L, overlaps, glyph_hits, overflow, oc,
      under_shape, timeline_hits, clipped, crowded) = _detect(pdf_path, page_no)
+    manifest_hits = _manifest_collisions(_manifest_path_for(pdf_path), page_no)
+    placement_hits = _manifest_placement_collisions(
+        _manifest_path_for(pdf_path), page_no)
     return {
         "defects": (len(overlaps) + len(glyph_hits) + len(overflow)
                     + len(oc) + len(under_shape) + len(timeline_hits)
-                    + len(clipped) + len(crowded)),
+                    + len(clipped) + len(crowded) + len(manifest_hits)
+                    + len(placement_hits)),
         "textlen": sum(len(ln["text"]) for ln in L),
     }
