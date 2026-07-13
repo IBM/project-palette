@@ -354,6 +354,91 @@ def _fix_redundant_addtext_at_same_coords(src: str) -> str:
     return out
 
 
+# A vertical axis label is built as a WIDE, SHORT box then rotated ±90 into a
+# thin vertical spine. The LoRA sometimes builds it the wrong way — a NARROW,
+# TALL box (w < h) with `rotate: ±90` — and pptxgenjs rotates about the box
+# center, so the label's real footprint becomes h WIDE and sweeps horizontally
+# into the adjacent content (the SWOT `quadrant_2x2` collision: 552 s2, 532 s4).
+# qwen's geometry editor CANNOT repair this — verified 2026-07-03, its rewrite
+# was reverted by the verify gate. Deterministic fix: swap w<->h about the SAME
+# center, so the pre-rotation box is wide-short again and the rotated result is a
+# correct thin vertical spine that clears the content.
+_ROTATE_KEY = re.compile(r"\brotate\s*:\s*(-?\d+(?:\.\d+)?)")
+
+
+def _fix_rotated_axis_label(src: str) -> str:
+    def _repl(m: "re.Match[str]") -> str:
+        block, opts = m.group(0), m.group("opts")
+        rm = _ROTATE_KEY.search(opts)
+        if not rm:
+            return block
+        if not (85 <= abs(float(rm.group(1))) % 180 <= 95):
+            return block
+        sig = _coords_signature(opts)
+        if sig is None:
+            return block
+        try:
+            x, y, w, h = (float(v) for v in sig)
+        except ValueError:
+            return block          # a coord is an expression, not a literal — skip
+        if w >= h:
+            return block          # already wide-short → correctly constructed
+        cx, cy = x + w / 2, y + h / 2
+        nv = {"x": round(cx - h / 2, 3), "y": round(cy - w / 2, 3),
+              "w": round(h, 3), "h": round(w, 3)}
+        new_opts = _COORD_KEY.sub(lambda c: c.group(1) + ": " + str(nv[c.group(1)]), opts)
+        return block.replace(opts, new_opts)
+    return _ADDTEXT_CALL.sub(_repl, src)
+
+
+def _fix_duplicate_addtext_text(src: str) -> str:
+    """Drop a `slide.addText("...")` whose exact string first-argument already
+    appeared in an EARLIER addText on the same slide. LoRA slip observed in a
+    v3_qwen 21-slide deck (slide 11): the slide subtitle was emitted a second
+    time verbatim near the footer, overlapping it. Keep the first occurrence,
+    drop later duplicates. Only PLAIN string literals of >= 25 chars, so short
+    repeated labels ("US", "+2", "Q1") and rich-text arrays are never touched."""
+    blocks: list[tuple[int, int, str]] = []
+    for m in _ADDTEXT_CALL.finditer(src):
+        arg = m.group("arg").strip()
+        if len(arg) >= 27 and arg[0] in "\"'" and arg[-1] == arg[0]:
+            blocks.append((m.start(), m.end(), arg))
+    seen: set[str] = set()
+    drop: list[int] = []
+    for idx, (_s, _e, arg) in enumerate(blocks):
+        if arg in seen:
+            drop.append(idx)
+        else:
+            seen.add(arg)
+    if not drop:
+        return src
+    out = src
+    for idx in sorted(drop, reverse=True):
+        s, e, _ = blocks[idx]
+        while e < len(out) and out[e] in " \t":
+            e += 1
+        if e < len(out) and out[e] == "\n":
+            e += 1
+        out = out[:s] + out[e:]
+    return out
+
+
+# Chart number-format over-escaping. The LoRA emits e.g.
+#   dataLabelFormatCode: "0\\\"M\\\""   (a doubled backslash before each quote)
+# which reaches pptxgenjs as the format code  0\"M\"  — and in Excel/OOXML number
+# formats  \"  is a LITERAL quote, so every label renders  500"ms" / $31"M".
+# The correct code is  0"M"  (the quotes are the format's literal-string
+# delimiters, JS-written as  "0\"M\"" ). Collapse the doubled backslash, and ONLY
+# inside `*FormatCode` string values so nothing else is touched.
+_FORMAT_CODE_STR = re.compile(r'(FormatCode:\s*")((?:\\.|[^"\\])*)(")')
+
+
+def _fix_chart_format_code_quotes(src: str) -> str:
+    def _repl(m: "re.Match[str]") -> str:
+        return m.group(1) + m.group(2).replace('\\\\\\"', '\\"') + m.group(3)
+    return _FORMAT_CODE_STR.sub(_repl, src)
+
+
 def _apply_deterministic_js_fixes(js_dir: Path, *,
                                   include_branding_assets: bool = True) -> None:
     """Tier-1 deterministic fixes on generated slide JS — known categorical
@@ -385,6 +470,9 @@ def _apply_deterministic_js_fixes(js_dir: Path, *,
         fixed = _fix_adjacent_runs_missing_space(fixed)
         fixed = _fix_semicolon_as_property_terminator(fixed)
         fixed = _fix_redundant_addtext_at_same_coords(fixed)
+        fixed = _fix_rotated_axis_label(fixed)
+        fixed = _fix_duplicate_addtext_text(fixed)
+        fixed = _fix_chart_format_code_quotes(fixed)
         if not include_branding_assets:
             fixed = _strip_branding_assets(fixed)
         if fixed != src:
