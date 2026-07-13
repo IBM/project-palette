@@ -50,7 +50,18 @@ class ModelSpec:
 
 
 # --- models available on RITS ----------------------------------------------
-GPT_OSS_120B = ModelSpec("gpt-oss-120b", "openai/gpt-oss-120b", max_tokens=24000)
+# TEMPORARY (2026-07-12): RITS is mid-migration and re-slugged the gpt-oss-120b
+# deployment to carry an `-a100` suffix on BOTH the URL slug and the payload
+# model id (`openai/gpt-oss-120b-a100`, confirmed via /v1/models; ctx=40144).
+# The old bare `gpt-oss-120b` / `openai/gpt-oss-120b` now 404s ("model does not
+# exist"), which broke the UI (crafter/planner/editor/critic all route here).
+# This is expected to revert once the migration settles — override back via
+# GPT_OSS_120B_SLUG / GPT_OSS_120B_MODEL, or just restore the bare names below.
+GPT_OSS_120B = ModelSpec(
+    os.environ.get("GPT_OSS_120B_SLUG", "gpt-oss-120b-a100"),
+    os.environ.get("GPT_OSS_120B_MODEL", "openai/gpt-oss-120b-a100"),
+    max_tokens=24000,
+)
 QWEN3_VL = ModelSpec(
     "qwen3-vl-235b-a22b-instruct", "Qwen/Qwen3-VL-235B-A22B-Instruct",
     max_tokens=1500,
