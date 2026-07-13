@@ -74,13 +74,25 @@ pres.defineSlideMaster({
 """
 
 
-def _runner_footer(out_path: Path) -> str:
+def _runner_footer(out_path: Path, manifest_path: Path | None = None) -> str:
     """The runner runs from the repo root (so icons/carbon/* and the
     node_modules pptxgenjs require both resolve), but the .pptx must land
-    in the eval dir — pass writeFile an absolute path."""
+    in the eval dir — pass writeFile an absolute path.
+
+    When `manifest_path` is given, the per-slide element manifest captured by
+    the draw-call wrappers is written there (synchronously, before writeFile,
+    so it survives a write failure) — this is the geometry detector's exact,
+    non-heuristic view of what was drawn."""
     out_js = json.dumps(str(out_path))
+    manifest_write = ""
+    if manifest_path is not None:
+        m_js = json.dumps(str(manifest_path))
+        manifest_write = (
+            f"try {{ require('fs').writeFileSync({m_js}, JSON.stringify(elements)); }}\n"
+            f"catch (e) {{ console.error('MANIFEST_FAILED:', e.message); }}\n"
+        )
     return f"""
-pres.writeFile({{ fileName: {out_js} }}).then(() => {{
+{manifest_write}pres.writeFile({{ fileName: {out_js} }}).then(() => {{
   if (failures.length > 0) {{
     console.error("FAILURES:", JSON.stringify(failures));
   }}
@@ -89,6 +101,77 @@ pres.writeFile({{ fileName: {out_js} }}).then(() => {{
   console.error("WRITE_FAILED:", e.message);
   process.exit(1);
 }});
+"""
+
+
+# The runner records every draw call's RESOLVED arguments (positions in inches,
+# fontSize in points, shape/chart type, text, draw order) into `elements`,
+# keyed by slide number. This is the source-of-truth the geometry detector uses
+# instead of reverse-engineering the rendered pixels: exact coordinates and
+# element identity, computed values resolved at draw time (loops included).
+_LOGGER_BLOCK = """
+// ---------- Element manifest logging (exact geometry for the detector) ----------
+const elements = {};
+function _num(v) { return (typeof v === 'number' && isFinite(v)) ? v : undefined; }
+function _flatText(a0) {
+  if (typeof a0 === 'string') return a0;
+  if (Array.isArray(a0)) return a0.map(r => (r && typeof r.text === 'string') ? r.text : '').join('');
+  return undefined;
+}
+function _runsOf(a0) {
+  // Rich-text array: per-run color + fontSize live here, NOT the outer opts.
+  if (!Array.isArray(a0)) return undefined;
+  return a0.map(function (r) {
+    var o = (r && r.options) || {};
+    return {
+      text: (r && typeof r.text === 'string') ? r.text : '',
+      color: (typeof o.color === 'string') ? o.color : undefined,
+      fontSize: _num(o.fontSize),
+    };
+  });
+}
+function _optsOf(method, args) {
+  if (method === 'addChart') return args[2] || {};   // addChart(type, data, opts)
+  if (method === 'addImage') return args[0] || {};   // addImage(opts)
+  return args[1] || {};                              // addText/addShape/addTable(_, opts)
+}
+function _logEl(sn, method, args) {
+  try {
+    var arr = (elements[sn] = elements[sn] || []);
+    var o = _optsOf(method, args) || {};
+    var a0 = args[0];
+    var kind = method, text;
+    if (method === 'addShape') kind = String(a0);          // 'rect' | 'line' | 'ellipse'
+    else if (method === 'addChart') kind = 'chart';
+    else if (method === 'addText') { kind = 'text'; text = _flatText(a0); }
+    else if (method === 'addImage') { kind = 'image'; text = o.path; }
+    else if (method === 'addTable') kind = 'table';
+    var fillC = o.fill && (typeof o.fill === 'string' ? o.fill : o.fill.color);
+    var lineC = o.line && (typeof o.line === 'string' ? o.line : o.line.color);
+    // Log the ROTATED axis-aligned bounding box as x/y/w/h. pptxgenjs rotates a
+    // box about its center, so a rotated label's real footprint (what can
+    // collide) differs from its pre-rotation strip. Detector reads x/y/w/h, so
+    // logging the rotated AABB makes rotated-text collisions visible with no
+    // detector change. (rotate in degrees; sign irrelevant to the AABB.)
+    var bx = _num(o.x), by = _num(o.y), bw = _num(o.w), bh = _num(o.h);
+    var rot = _num(o.rotate);
+    if (rot && bx != null && by != null && bw != null && bh != null) {
+      var th = Math.abs(rot) * Math.PI / 180;
+      var cs = Math.abs(Math.cos(th)), sn = Math.abs(Math.sin(th));
+      var cx = bx + bw / 2, cy = by + bh / 2;
+      var hw = bw / 2 * cs + bh / 2 * sn, hh = bw / 2 * sn + bh / 2 * cs;
+      bx = cx - hw; by = cy - hh; bw = 2 * hw; bh = 2 * hh;
+    }
+    arr.push({
+      order: arr.length, method: method, kind: kind, text: text,
+      runs: (method === 'addText') ? _runsOf(a0) : undefined,
+      x: bx, y: by, w: bw, h: bh, rotate: rot || undefined,
+      fontSize: _num(o.fontSize),
+      color: (typeof o.color === 'string') ? o.color : undefined,
+      fill: fillC, line: lineC, valign: o.valign, align: o.align,
+    });
+  } catch (e) { /* logging must never break a render */ }
+}
 """
 
 
@@ -200,8 +283,9 @@ function connector(slide, x1, y1, x2, y2, color, opts) {{
 
 
 def stitch_runner(slide_js: list[str | None], deck_title: str,
-                  palette: dict[str, Any], out_path: Path) -> str:
-    parts = [_RUNNER_HEADER, _MASTER_DEFS,
+                  palette: dict[str, Any], out_path: Path,
+                  manifest_path: Path | None = None) -> str:
+    parts = [_RUNNER_HEADER, _LOGGER_BLOCK, _MASTER_DEFS,
              _palette_runner_block(palette, deck_title)]
     n_total = len(slide_js)
     for i, js in enumerate(slide_js, start=1):
@@ -220,6 +304,7 @@ def stitch_runner(slide_js: list[str | None], deck_title: str,
         parts.append("    const orig = slide[m];")
         parts.append("    if (typeof orig === 'function') {")
         parts.append("      slide[m] = (...args) => {")
+        parts.append(f"        _logEl({i}, m, args);")
         parts.append("        try { return orig.apply(slide, args); }")
         parts.append(f"        catch (e) {{ failures.push({{ slide: {i}, kind: 'shape_error', method: m, message: e.message }}); }}")
         parts.append("      };")
@@ -234,6 +319,7 @@ def stitch_runner(slide_js: list[str | None], deck_title: str,
         parts.append("  (function() {")
         parts.append("    const _addImage = slide.addImage.bind(slide);")
         parts.append("    slide.addImage = (opts) => {")
+        parts.append(f"      _logEl({i}, 'addImage', [opts]);")
         parts.append("      try {")
         parts.append("        if (opts && opts.path && !require('fs').existsSync(opts.path)) {")
         parts.append(f"          failures.push({{ slide: {i}, kind: 'missing_image', path: String(opts.path) }});")
@@ -262,7 +348,7 @@ def stitch_runner(slide_js: list[str | None], deck_title: str,
         )
         parts.append("  }")
         parts.append("})();")
-    parts.append(_runner_footer(out_path))
+    parts.append(_runner_footer(out_path, manifest_path))
     return "\n".join(parts)
 
 
@@ -369,9 +455,10 @@ def render(eval_dir: Path, deck_path: Path | None, out_name: str = "deck.pptx") 
     deck_title = deck.get("deck_title", "")
 
     pptx = (eval_dir / out_name).resolve()
+    manifest = (eval_dir / "elements.json").resolve()
     slide_js = _collect_slide_js(eval_dir)
     runner_js = stitch_runner(slide_js, deck_title=deck_title, palette=palette,
-                              out_path=pptx)
+                              out_path=pptx, manifest_path=manifest)
     runner_path = eval_dir / "_runner.js"
     runner_path.write_text(runner_js)
 
@@ -426,7 +513,8 @@ def render(eval_dir: Path, deck_path: Path | None, out_name: str = "deck.pptx") 
             salvaged_js = [None if (i + 1) in bad_slides else js
                            for i, js in enumerate(slide_js)]
             runner_js2 = stitch_runner(salvaged_js, deck_title=deck_title,
-                                       palette=palette, out_path=pptx)
+                                       palette=palette, out_path=pptx,
+                                       manifest_path=manifest)
             runner_path.write_text(runner_js2)
             proc2 = subprocess.run(
                 [node, str(runner_path)], cwd=str(cwd),
