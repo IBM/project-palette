@@ -245,6 +245,42 @@ Either way, confirm what landed:
 cd $PAL && make skill-status CUGA=$CUGA
 ```
 
+### Into Claude Code instead
+
+Claude Code scans `~/.claude/skills/` itself, so installing is the whole setup:
+
+```bash
+cd $PAL && .venv/bin/python -m palette_skill.install --host claude-code
+```
+
+**Run it from the checkout**, not from an installed copy of the package —
+outside a checkout there is no wheel to vendor and you get an empty `vendor/`.
+
+Then start Claude Code anywhere and ask for a deck. It polls at
+`--max-seconds 240` there rather than 100, because `Bash` allows ten minutes.
+Seeing 25 means the installed skill is stale.
+
+Installing for one host does not disturb another: `install` snapshots
+`payload/` and restores it, so this leaves your CUGA install untouched. Confirm
+with `make skill-status CUGA=$CUGA`.
+
+### Which server am I talking to?
+
+`$PALETTE_URL` if set, otherwise **`http://127.0.0.1:18814`** — local. Do not
+reason about it; ask the log:
+
+```bash
+palette-skill health                                       # what it resolved
+grep <thread-id> ~/.local/state/palette/server.log         # who served it
+```
+
+The thread id is in `<dest>/.palette-deck.json`. Present in that log = served
+locally. Against a deployment instead:
+
+```bash
+PALETTE_URL=https://palette.example.cloud palette-skill health
+```
+
 ### Pointing at a Palette that runs elsewhere
 
 Code Engine, a shared box, a colleague's machine — the skill is unchanged, only
@@ -356,6 +392,9 @@ pytest partway and it looks like a failure that never happened.
 | `make install` → `Error 1` | no venv, or a foreign one active | `deactivate`, then `make install` from `$PAL` |
 | Deps landed in the wrong environment | bare `pip` resolved outside `.venv` | `make install` — it targets `.venv/bin/python` explicitly |
 | `pytest: command not found` | installed `.[server]`, which has no test deps | `uv pip install -e '.[dev]'` |
+| Installed skill has an empty `vendor/` | ran the installer from the installed package, not the checkout | `cd $PAL && .venv/bin/python -m palette_skill.install --host …` |
+| Claude Code polls at 25s, not 240s | stale skill, or rendered for the wrong host | reinstall with `--host claude-code` |
+| Unsure which server served a deck | — | `grep <thread-id> ~/.local/state/palette/server.log` |
 | `no matches found: cuga_workspace/*/...` | you are already inside `cuga_workspace` | drop the prefix: `*/deck/` |
 | Agent reports `deck/deck.pptx` and you cannot find it | stale skill — the relative path predates `pptx_path` | `make skill-install CUGA=$CUGA` |
 | Agent drives `start-draft` / `wait-draft` separately | stale skill; `deck` supersedes those | `make skill-install CUGA=$CUGA` |

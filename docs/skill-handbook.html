@@ -487,7 +487,7 @@ Bump VERSION, or delete those files if you are certain they were never shared.</
     <!-- ─────────────────────────── 5 ─────────────────────────── -->
     <section id="use">
       <h2><span class="num">05</span>Using it — CUGA and Claude Code</h2>
-      <p class="sub">One skill, rendered per host. The differences are not cosmetic.</p>
+      <p class="sub">One skill, rendered per host — and how to test each. The differences are not cosmetic.</p>
 
       <p>
         Almost all of <code>SKILL.md</code> describes a service and is true anywhere. What is
@@ -560,6 +560,58 @@ Bump VERSION, or delete those files if you are certain they were never shared.</
         <code>hosts.py</code> — not forking the skill. Tests assert that CUGA's tarball never leaks
         the string <code>Bash</code>, that Claude Code's never leaks <code>run_command</code>, and
         that each ships its own poll window.
+      </div>
+
+      <h3>Testing it in Claude Code, end to end</h3>
+      <p>
+        Claude Code scans <code>~/.claude/skills/</code> itself, so installing is the whole setup.
+        Run the installer <b>from the Palette checkout</b> — outside one there is no wheel to
+        vendor and you get a skill folder with an empty <code>vendor/</code>.
+      </p>
+      <div class="cmd">
+        <div class="cmd-head">install, then just ask</div>
+<pre><span class="k">cd</span> ~/…/project-palette
+.venv/bin/python -m palette_skill.install --host <span class="s">claude-code</span>
+<span class="k">palette-skill serve ensure</span>
+
+<span class="c"># then, in any Claude Code session:</span>
+<span class="c">#   "build me a deck about vector databases for backend engineers"</span></pre>
+      </div>
+      <p>Four things to watch, in order:</p>
+      <ol class="body">
+        <li><b>It loads the skill</b> rather than reaching for <code>python-pptx</code>. That routing
+          decision comes from the <code>description:</code> line alone.</li>
+        <li><b>It installs the client from the vendored wheel</b> under
+          <code>~/.claude/skills/palette/vendor/</code>.</li>
+        <li><b>It polls at <code>--max-seconds 240</code></b>, not 25. Seeing 25 means the installed
+          skill is stale or was rendered for another host.</li>
+        <li><b>It reports an absolute <code>pptx_path</code></b> and does <em>not</em> mention a Files
+          panel — there isn't one here, and the path is the whole answer.</li>
+      </ol>
+      <div class="note good">
+        <b>Installing for one host does not disturb another.</b> <code>install</code> snapshots
+        <code>payload/</code> and restores it, so a <code>--host claude-code</code> install leaves
+        the checkout and any CUGA install exactly as they were. That was not true until it was
+        tested: the first Claude Code install left the repo rendered for Claude Code, and
+        <code>make skill-check</code> began failing for no visible reason.
+      </div>
+
+      <h3>Which server is it talking to?</h3>
+      <p>
+        The client resolves <code>$PALETTE_URL</code>, then
+        <code>contract.DEFAULT_BASE_URL</code> — which is
+        <b><code>http://127.0.0.1:18814</code></b>. Local. A deployed instance is the
+        <em>intended</em> default and is noted as such in <code>contract.py</code>, but no URL is
+        pinned there yet, so nothing silently talks to the wrong host.
+      </p>
+      <p>Don't reason about it — ask the log. The thread id is in <code>.palette-deck.json</code>:</p>
+      <div class="cmd">
+        <div class="cmd-head">who served this deck?</div>
+<pre><span class="k">palette-skill health</span>                                <span class="c"># what the client resolved</span>
+<span class="k">grep</span> &lt;thread-id&gt; ~/.local/state/palette/server.log   <span class="c"># present = served locally</span>
+
+<span class="c"># against a deployment instead — everything else is unchanged</span>
+PALETTE_URL=<span class="s">https://palette.example.cloud</span> <span class="k">palette-skill health</span></pre>
       </div>
 
       <h3>Reading the result</h3>
@@ -694,6 +746,11 @@ Bump VERSION, or delete those files if you are certain they were never shared.</
               <td>Agent paused for approval that had already been given.</td>
               <td>The docs said <em>"draft, show me, then build it"</em> should pause — but that phrasing carries its own permission.</td>
               <td><code>--pause-after-plan</code> is for an explicit gate only; the distinction is pinned by a test.</td>
+            </tr>
+            <tr>
+              <td>Installing for Claude Code silently re-rendered the checkout for Claude Code.</td>
+              <td><code>payload/</code> holds one host at a time; the install path never restored it. <code>make skill-check</code> then failed for no visible reason.</td>
+              <td><code>install()</code> snapshots and restores, exactly as <code>check()</code> already did.</td>
             </tr>
             <tr>
               <td>User could not find a deck the agent had genuinely built.</td>

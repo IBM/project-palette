@@ -322,6 +322,71 @@ print(build_skill.render_execution())"
 leaks into the shared prose, and `test_claude_code_variant_drops_cuga_vocabulary`
 fails if a variant carries another host's words.
 
+### Testing it in Claude Code, end to end
+
+Claude Code discovers `~/.claude/skills/` on its own, so installing is the
+whole setup. **Run the installer from the Palette checkout**, not from an
+installed copy of the package — outside a checkout there is no wheel to vendor
+and you get a skill folder with an empty `vendor/`:
+
+```bash
+cd ~/Documents/GitHub/project-palette-july25
+.venv/bin/python -m palette_skill.install --host claude-code
+palette-skill serve ensure          # the skill talks to a server, wherever it is
+```
+
+Then start a Claude Code session anywhere and ask for a deck — *"build me a
+deck about vector databases for backend engineers"*. It should reach for the
+skill unprompted; that routing decision comes from the `description:` line
+alone.
+
+What to look for, in order:
+
+1. **It loads the skill** rather than reaching for `python-pptx`.
+2. **It installs the client from the vendored wheel** —
+   `uv pip install ~/.claude/skills/palette/vendor/palette_skill-*.whl`.
+3. **It polls with `--max-seconds 240`**, not 25. Claude Code's `Bash` allows
+   ten minutes, so one call covers most of a build; seeing 25 means the
+   installed skill is stale or was rendered for the wrong host.
+4. **It reports an absolute `pptx_path`** and does not mention a Files panel —
+   there isn't one, and the path is the whole answer on this host.
+
+Verify the artifact the same way as anywhere else:
+
+```bash
+cat <dest>/.palette-deck.json                                    # "stage": "done"
+unzip -p <dest>/deck.pptx ppt/slides/slide1.xml | grep -c "IBM Plex"
+```
+
+> **Installing for one host does not disturb another.** `install` snapshots
+> `payload/` and restores it, so a `--host claude-code` install leaves the
+> checkout — and any CUGA install made from it — exactly as they were. That was
+> not true until it was tested: the first claude-code install left the repo
+> rendered for Claude Code and `make skill-check` started failing for no
+> visible reason.
+
+### Which server did it actually talk to?
+
+The client resolves `$PALETTE_URL`, then `contract.DEFAULT_BASE_URL`, which is
+**`http://127.0.0.1:18814`** — local. There is no ambiguity to reason about;
+the server log answers it:
+
+```bash
+grep <thread-id> ~/.local/state/palette/server.log
+```
+
+A thread id that appears there was served locally. One that does not went
+somewhere else, and the deck's own `.palette-deck.json` holds the id.
+
+To test against a deployment instead:
+
+```bash
+PALETTE_URL=https://palette.example.cloud palette-skill health
+```
+
+Everything above is otherwise unchanged — the skill is an HTTP client and only
+the URL differs. `deployment/DEPLOYMENT.md` covers standing one up.
+
 ---
 
 ## What none of this catches
