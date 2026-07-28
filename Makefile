@@ -35,12 +35,25 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 	  awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
-install: ## Install Python + Node deps
-	pip install -r requirements.txt
+install: ## Install Python + Node deps into .venv (creates it if missing)
+	@# Three things this has to get right, each of which broke it before:
+	@#  1. `uv venv` makes a venv with NO pip, so bare `pip` here resolves to
+	@#     whatever is on PATH — Homebrew's, or another project's active venv —
+	@#     and installs Palette's dependencies somewhere else entirely.
+	@#  2. `distclean` deletes .venv, and `make install` is what the docs tell
+	@#     you to run next, so it must cope with no venv at all.
+	@#  3. `-r requirements.txt` alone never installs *this package*, so the
+	@#     `palette-skill` console script is missing and every documented
+	@#     command fails with "command not found".
+	@test -x .venv/bin/python || uv venv
+	uv pip install --python .venv/bin/python -e '.[dev]'
 	npm install
+	@echo
+	@echo "installed. activate with:  source .venv/bin/activate"
+	@.venv/bin/palette-skill --version
 
 dev: ## Run the server on http://localhost:$(PORT)
-	python app.py --port $(PORT)
+	$(PY) app.py --port $(PORT)
 
 # --- Local Docker (native arch) ---
 
@@ -157,4 +170,4 @@ else
 	  || true
 endif
 	@echo ""
-	@echo "clean. rebuild with:  uv venv && uv pip install -e '"'"'.[server]'"'"' && npm install"
+	@echo "clean. rebuild with:  make install     (creates .venv, installs .[dev] + npm)"

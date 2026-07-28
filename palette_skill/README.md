@@ -89,6 +89,7 @@ is not something you have to remember.
 
 Start with **[GUIDE.md](GUIDE.md)** — what the skill is, what each `make` target
 produces, and a clean start-to-deck walkthrough. [TESTING.md](TESTING.md) is the
-eight-tier verification ladder.
+eight-tier verification ladder. [CHEATSHEET.md](CHEATSHEET.md) is the one-page
+version for when you already know all that and just want to reset and re-test.
 
 See [`payload/SKILL.md`](payload/SKILL.md) for what the agent is actually told.

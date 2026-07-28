@@ -265,7 +265,8 @@ ls -l cuga_workspace/*/deck/                    # deck.pptx, slide-01.png …
 cat  cuga_workspace/*/deck/.palette-deck.json   # "stage": "done"
 ```
 
-See [palette_skill/GUIDE.md](palette_skill/GUIDE.md) for the full walkthrough,
+See [palette_skill/CHEATSHEET.md](palette_skill/CHEATSHEET.md) to tear down and
+re-test quickly, or [palette_skill/GUIDE.md](palette_skill/GUIDE.md) for the full walkthrough,
 including release → consume → deck.
 
 ### Why it can't silently drift

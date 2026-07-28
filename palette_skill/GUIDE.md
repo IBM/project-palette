@@ -3,9 +3,13 @@
 What it is, what the build produces, and how to get from an empty machine to an
 agent that builds you a deck.
 
-> **Before anything else:** `palette_skill/`, `tests/`, `scripts/`, `.github/`
-> and `pyproject.toml` are **untracked**. A `git clean -fd` deletes all of it.
-> Commit them before you go anywhere near a clean-up command.
+> In a hurry? [CHEATSHEET.md](CHEATSHEET.md) is this page condensed to one
+> screen: reset levels, the build/install loop, and the checks that tell you a
+> deck is real.
+>
+> Before any clean-up command, `git status --short` and commit. The clean-room
+> reset drops `.venv`, `node_modules` and `dist/`, and `git clean -fd` would take
+> anything still untracked with it.
 
 ---
 
@@ -512,6 +516,10 @@ make skill-status  CUGA=../cuga-agent-july25  # has either side moved?
 The pre-commit hook runs the first of those automatically when you stage
 `app.py`, `config.py`, `session.py`, `requirements.txt`, `pyproject.toml` or
 `palette_skill/`.
+
+[CHEATSHEET.md](CHEATSHEET.md) condenses all of the above to one page — reset
+levels, the build/release/install loop, and the three checks that tell you a
+deck is real.
 
 See [TESTING.md](TESTING.md) for the full eight-tier verification ladder, and
 [payload/SKILL.md](payload/SKILL.md) for what the agent is actually told.

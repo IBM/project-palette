@@ -32,6 +32,7 @@ DOCS = [
     PACKAGE / "README.md",
     PACKAGE / "GUIDE.md",
     PACKAGE / "TESTING.md",
+    PACKAGE / "CHEATSHEET.md",
     PACKAGE / "payload" / "SKILL.md",
     PACKAGE / "payload" / "reference.md",
 ]
@@ -192,6 +193,54 @@ def test_guide_covers_the_preset_settings_cuga_changes() -> None:
         assert setting in guide, f"GUIDE.md never mentions {setting}, which demo_palette raises"
 
 
+def test_makefile_never_shells_out_to_a_bare_interpreter() -> None:
+    """A recipe running bare `pip`/`python` uses whatever env happens to be active.
+
+    `uv venv` creates a venv with no `pip` of its own, so a bare `pip install`
+    resolves to Homebrew's — or to another project's activated venv — and puts
+    Palette's dependencies somewhere nobody intended. That is not hypothetical:
+    `make install` did exactly this, and failed for someone who had a different
+    project's environment active.
+
+    Recipes must go through `$(PY)`, an explicit `.venv/bin/...`, or `uv pip
+    --python`. Comment lines are exempt; they discuss the problem.
+    """
+    recipes = [
+        line
+        for line in (REPO_ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+        if line.startswith("\t") and not line.lstrip("\t@").startswith("#")
+    ]
+    offenders = [
+        line.strip()
+        for line in recipes
+        if re.search(r"(?<![\w./$(-])(pip|python3?)\b", line)
+        and "$(PY)" not in line
+        and ".venv/bin/" not in line
+        and "uv pip" not in line
+        and "uv venv" not in line
+    ]
+    assert not offenders, (
+        "Makefile recipes invoke a bare interpreter, which resolves outside "
+        f".venv: {offenders}"
+    )
+
+
+def test_clean_targets_point_at_a_rebuild_that_works() -> None:
+    """The line printed after distclean is the next thing anyone types.
+
+    It used to say `uv pip install -e '.[server]'` — the wrong extra (no
+    pytest) and a command that never installs the package itself, so
+    `palette-skill` stays missing. Someone following it lands on
+    "command not found" with no idea why.
+    """
+    makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+    tail = makefile[makefile.index("distclean:") :]
+    assert "'.[server]'" not in tail, (
+        "distclean tells you to rebuild with the extra that omits pytest"
+    )
+    assert "make install" in tail, "distclean does not say how to rebuild"
+
+
 def test_poll_window_fits_inside_every_host_step() -> None:
     """The poll must fit one step, with room for interpreter start-up.
 
@@ -219,5 +268,10 @@ def test_guide_and_testing_agree_on_the_install_extra() -> None:
 def test_every_doc_is_linked_from_somewhere() -> None:
     """An unlinked doc is one nobody finds."""
     corpus = "\n".join(d.read_text(encoding="utf-8") for d in DOCS)
-    for doc in (PACKAGE / "GUIDE.md", PACKAGE / "TESTING.md", PACKAGE / "README.md"):
+    for doc in (
+        PACKAGE / "GUIDE.md",
+        PACKAGE / "TESTING.md",
+        PACKAGE / "README.md",
+        PACKAGE / "CHEATSHEET.md",
+    ):
         assert doc.name in corpus, f"{doc.name} is not linked from any other doc"
