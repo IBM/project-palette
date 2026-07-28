@@ -119,6 +119,43 @@ class TestVersionedRelease:
             release.INIT_PY = original
 
 
+class TestInstallLeavesTheCheckoutAlone:
+    """Installing for one host must not re-render the repo for that host.
+
+    payload/ holds a single host's rendering. `install --host claude-code` used
+    to leave the checkout describing Claude Code: `make skill-check` then failed
+    for no visible reason, and committing it would have shipped Bash-flavoured
+    instructions to every CUGA user. `check()` already snapshotted for exactly
+    this reason; installing did not.
+    """
+
+    def _payload(self) -> dict:
+        return {p.name: p.read_bytes() for p in install.PAYLOAD_DIR.glob("*.md")}
+
+    def test_installing_for_another_host_restores_the_payload(self, tmp_path: Path) -> None:
+        before = self._payload()
+        install.install(
+            tmp_path / "skills" / "palette", force_regenerate=False, host_key="claude-code"
+        )
+        assert self._payload() == before, "payload/ was left rendered for claude-code"
+
+    def test_the_installed_copy_is_still_that_host(self, tmp_path: Path) -> None:
+        """Restoring the checkout must not undo the install itself."""
+        target = tmp_path / "skills" / "palette"
+        install.install(target, force_regenerate=False, host_key="claude-code")
+        skill = (target / "SKILL.md").read_text(encoding="utf-8")
+        assert "Bash" in skill and "run_command" not in skill
+
+    def test_pinning_a_base_url_also_restores(self, tmp_path: Path) -> None:
+        before = self._payload()
+        install.install(
+            tmp_path / "skills" / "palette",
+            force_regenerate=False,
+            base_url="https://palette.example.cloud",
+        )
+        assert self._payload() == before, "payload/ was left pinned to a URL"
+
+
 class TestNonVendoredRendering:
     """Installed from a wheel, there is nothing to vendor."""
 

@@ -1,0 +1,791 @@
+<title>The Palette Skill — build, release, use, verify</title>
+
+<style>
+  :root {
+    --ink:        #1c1814;
+    --ink-soft:   #55504a;
+    --ink-faint:  #86827a;
+    --ground:     #faf9f5;
+    --raise:      #f4f1e9;
+    --sink:       #eeebe2;
+    --line:       #e0dcd1;
+    --line-soft:  #eae7dd;
+    --primary:    #8a4500;
+    --accent:     #a94e2f;
+    --ochre:      #966a22;
+    --good:       #3f6b46;
+    --warn:       #8a5a12;
+    --bad:        #97372a;
+    --code-bg:    #f4f1e9;
+    --shadow:     0 1px 2px rgba(28,24,20,.05), 0 8px 24px -12px rgba(28,24,20,.12);
+    --sans: "IBM Plex Sans", ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink:       #efe9e0;
+      --ink-soft:  #b3aca1;
+      --ink-faint: #8a837a;
+      --ground:    #17140f;
+      --raise:     #201c16;
+      --sink:      #262119;
+      --line:      #352f26;
+      --line-soft: #2b261e;
+      --primary:   #e9a463;
+      --accent:    #e08a63;
+      --ochre:     #d3ac5e;
+      --good:      #86bf90;
+      --warn:      #d9ab5c;
+      --bad:       #e69083;
+      --code-bg:   #201c16;
+      --shadow:    0 1px 2px rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="light"] {
+    --ink:#1c1814; --ink-soft:#55504a; --ink-faint:#86827a;
+    --ground:#faf9f5; --raise:#f4f1e9; --sink:#eeebe2;
+    --line:#e0dcd1; --line-soft:#eae7dd;
+    --primary:#8a4500; --accent:#a94e2f; --ochre:#966a22;
+    --good:#3f6b46; --warn:#8a5a12; --bad:#97372a; --code-bg:#f4f1e9;
+    --shadow:0 1px 2px rgba(28,24,20,.05), 0 8px 24px -12px rgba(28,24,20,.12);
+  }
+  :root[data-theme="dark"] {
+    --ink:#efe9e0; --ink-soft:#b3aca1; --ink-faint:#8a837a;
+    --ground:#17140f; --raise:#201c16; --sink:#262119;
+    --line:#352f26; --line-soft:#2b261e;
+    --primary:#e9a463; --accent:#e08a63; --ochre:#d3ac5e;
+    --good:#86bf90; --warn:#d9ab5c; --bad:#e69083; --code-bg:#201c16;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.6);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--sans); font-size: 16px; line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { display: grid; grid-template-columns: 232px minmax(0,1fr); gap: 56px;
+          max-width: 1180px; margin: 0 auto; padding: 0 28px 120px; }
+  @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; gap: 0; } }
+
+  /* ---- masthead ---- */
+  header.top { grid-column: 1 / -1; padding: 72px 0 44px; border-bottom: 1px solid var(--line); margin-bottom: 48px; }
+  .eyebrow { font-family: var(--mono); font-size: 11.5px; letter-spacing: .14em;
+             text-transform: uppercase; color: var(--accent); margin: 0 0 18px; }
+  h1 { font-size: clamp(2.1rem, 5vw, 3.1rem); line-height: 1.08; margin: 0 0 20px;
+       letter-spacing: -.024em; font-weight: 600; text-wrap: balance; max-width: 20ch; }
+  .lede { font-size: 1.14rem; color: var(--ink-soft); max-width: 64ch; margin: 0 0 26px; }
+  .lede strong { color: var(--ink); font-weight: 600; }
+  .repo-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { font-family: var(--mono); font-size: 12px; padding: 5px 11px; border-radius: 999px;
+          border: 1px solid var(--line); background: var(--raise); color: var(--ink-soft);
+          text-decoration: none; }
+  a.chip:hover { border-color: var(--accent); color: var(--accent); }
+  .chip b { color: var(--ink); font-weight: 600; }
+
+  /* ---- nav rail ---- */
+  nav.rail { position: sticky; top: 28px; align-self: start; font-size: 13.5px; }
+  @media (max-width: 900px) {
+    nav.rail { position: static; margin-bottom: 44px; padding-bottom: 28px; border-bottom: 1px solid var(--line); }
+  }
+  nav.rail p { font-family: var(--mono); font-size: 10.5px; letter-spacing: .13em;
+               text-transform: uppercase; color: var(--ink-faint); margin: 0 0 12px; }
+  nav.rail ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; counter-reset: n; }
+  nav.rail a { display: block; padding: 5px 0 5px 26px; color: var(--ink-soft); text-decoration: none;
+               border-left: 2px solid var(--line-soft); position: relative; }
+  nav.rail li { counter-increment: n; }
+  nav.rail a::before { content: counter(n); position: absolute; left: 10px; font-family: var(--mono);
+                       font-size: 10.5px; color: var(--ink-faint); top: 7px; }
+  nav.rail a:hover { color: var(--accent); border-left-color: var(--accent); }
+
+  /* ---- sections ---- */
+  main { min-width: 0; }
+  section { margin: 0 0 72px; scroll-margin-top: 24px; }
+  h2 { font-size: 1.62rem; letter-spacing: -.018em; font-weight: 600; margin: 0 0 6px; text-wrap: balance; }
+  h2 .num { font-family: var(--mono); font-size: .82rem; color: var(--accent); margin-right: 12px;
+            font-weight: 400; letter-spacing: 0; }
+  .sub { color: var(--ink-faint); margin: 0 0 26px; font-size: .97rem; }
+  h3 { font-size: 1.06rem; font-weight: 600; margin: 36px 0 12px; letter-spacing: -.008em; }
+  h4 { font-size: .84rem; font-family: var(--mono); font-weight: 500; letter-spacing: .07em;
+       text-transform: uppercase; color: var(--ink-faint); margin: 28px 0 10px; }
+  p { margin: 0 0 15px; max-width: 68ch; }
+  ul, ol.body { max-width: 68ch; padding-left: 20px; margin: 0 0 15px; }
+  li { margin-bottom: 7px; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  code { font-family: var(--mono); font-size: .865em; background: var(--code-bg);
+         padding: .12em .38em; border-radius: 4px; border: 1px solid var(--line-soft); }
+  strong { font-weight: 600; }
+
+  /* ---- code blocks ---- */
+  .cmd { background: var(--code-bg); border: 1px solid var(--line); border-radius: 9px;
+         margin: 0 0 18px; overflow: hidden; box-shadow: var(--shadow); }
+  .cmd-head { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+              color: var(--ink-faint); padding: 9px 15px; border-bottom: 1px solid var(--line-soft);
+              background: var(--sink); }
+  .cmd pre { margin: 0; padding: 15px; overflow-x: auto; font-family: var(--mono);
+             font-size: 13.2px; line-height: 1.72; }
+  .cmd .c { color: var(--ink-faint); }        /* comment */
+  .cmd .k { color: var(--primary); font-weight: 600; }  /* command name */
+  .cmd .s { color: var(--ochre); }            /* string / value */
+  .cmd .o { color: var(--good); }             /* output */
+  .cmd .x { color: var(--bad); }              /* error */
+
+  /* ---- tables ---- */
+  .scroll { overflow-x: auto; margin: 0 0 20px; border: 1px solid var(--line);
+            border-radius: 9px; background: var(--raise); }
+  table { border-collapse: collapse; width: 100%; font-size: 14.2px; min-width: 480px; }
+  th { text-align: left; font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em;
+       text-transform: uppercase; color: var(--ink-faint); font-weight: 500;
+       padding: 11px 15px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td { padding: 11px 15px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td code { background: transparent; border: 0; padding: 0; color: var(--primary); }
+  .num-col { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* ---- callouts ---- */
+  .note { border-left: 2px solid var(--accent); padding: 2px 0 2px 18px; margin: 0 0 20px;
+          color: var(--ink-soft); max-width: 66ch; }
+  .note b { color: var(--ink); }
+  .note.warn { border-left-color: var(--warn); }
+  .note.good { border-left-color: var(--good); }
+
+  /* ---- pipeline / flow ---- */
+  .flow { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; margin: 0 0 20px; }
+  .step { flex: 1 1 150px; min-width: 0; background: var(--raise); border: 1px solid var(--line);
+          border-radius: 9px; padding: 13px 15px; }
+  .step .n { font-family: var(--mono); font-size: 10.5px; color: var(--accent);
+             letter-spacing: .1em; text-transform: uppercase; display: block; margin-bottom: 5px; }
+  .step .t { font-weight: 600; font-size: .94rem; display: block; margin-bottom: 4px; }
+  .step .d { font-size: .85rem; color: var(--ink-soft); line-height: 1.5; }
+
+  /* ---- two-mode split ---- */
+  .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(258px, 1fr)); gap: 16px; margin: 0 0 22px; }
+  .card { border: 1px solid var(--line); border-radius: 10px; padding: 18px; background: var(--raise); }
+  .card h5 { margin: 0 0 4px; font-size: 1rem; font-weight: 600; }
+  .card .tag { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+               color: var(--ink-faint); display: block; margin-bottom: 9px; }
+  .card p { font-size: .89rem; color: var(--ink-soft); margin: 0 0 10px; }
+  .card pre { font-family: var(--mono); font-size: 12.4px; background: var(--code-bg); margin: 0;
+              padding: 10px 12px; border-radius: 6px; overflow-x: auto; border: 1px solid var(--line-soft); }
+
+  /* ---- doc map ---- */
+  .docs { display: flex; flex-direction: column; gap: 10px; margin: 0 0 20px; }
+  .doc { display: grid; grid-template-columns: minmax(150px, 200px) 1fr; gap: 18px;
+         border: 1px solid var(--line); border-radius: 9px; padding: 14px 16px; background: var(--raise); }
+  @media (max-width: 620px) { .doc { grid-template-columns: 1fr; gap: 5px; } }
+  .doc a.name { font-family: var(--mono); font-size: 13px; font-weight: 500; text-decoration: none;
+                color: var(--primary); word-break: break-word; }
+  .doc a.name:hover { text-decoration: underline; }
+  .doc .when { font-size: .88rem; color: var(--ink-soft); }
+  .doc .when b { color: var(--ink); font-weight: 600; }
+
+  footer { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 26px; margin-top: 20px;
+           color: var(--ink-faint); font-size: .86rem; }
+  footer a { color: var(--ink-soft); }
+  hr.soft { border: 0; border-top: 1px solid var(--line-soft); margin: 34px 0; }
+</style>
+
+<div class="wrap">
+
+  <header class="top">
+    <p class="eyebrow">Agent skills · handbook</p>
+    <h1>Palette as an agent skill</h1>
+    <p class="lede">
+      Palette builds real PowerPoint decks from an editable plan. It cannot run inside an agent
+      sandbox — it needs Node, LibreOffice, Poppler and a model roster. So the skill is
+      <strong>not a copy of Palette</strong>: it is instructions for driving its HTTP API, plus a
+      client whose only dependency is <code>httpx</code>. This is how that skill is built,
+      released, kept current, consumed, and verified.
+    </p>
+    <div class="repo-row">
+      <a class="chip" href="https://github.com/IBM/project-palette/tree/palette_skill">IBM/project-palette <b>@ palette_skill</b></a>
+      <a class="chip" href="https://github.com/cuga-project/cuga-agent/tree/palette">cuga-project/cuga-agent <b>@ palette</b></a>
+    </div>
+  </header>
+
+  <nav class="rail">
+    <p>Contents</p>
+    <ol>
+      <li><a href="#what">What the skill is</a></li>
+      <li><a href="#build">Building it</a></li>
+      <li><a href="#release">Releasing it</a></li>
+      <li><a href="#update">Keeping it current</a></li>
+      <li><a href="#use">Using it — CUGA &amp; Claude Code</a></li>
+      <li><a href="#test">What testing means</a></li>
+      <li><a href="#failures">Failures worth knowing</a></li>
+      <li><a href="#docs">Which doc is for what</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+    <!-- ─────────────────────────── 1 ─────────────────────────── -->
+    <section id="what">
+      <h2><span class="num">01</span>What the skill is</h2>
+      <p class="sub">A folder an agent opens when a task matches it — and a boundary decision.</p>
+
+      <p>
+        A skill is a <code>SKILL.md</code> with YAML frontmatter plus whatever files the workflow
+        needs. The host reads only the one-line <code>description</code> into the model's prompt;
+        the body costs nothing until the model asks for it by name. That economy is the point —
+        you can ship twenty capabilities without paying for twenty playbooks on every message.
+      </p>
+      <div class="note">
+        <b>The description is the whole routing decision.</b> If it does not contain the words a
+        user would actually say, the skill is never opened, however good the body is.
+      </div>
+
+      <h3>Why Palette is split this way</h3>
+      <div class="flow">
+        <div class="step">
+          <span class="n">Agent side</span>
+          <span class="t">Sandbox</span>
+          <span class="d">Reads SKILL.md, runs <code>palette-skill deck</code>, writes <code>./deck/</code>. Restricted writes, no heavy toolchain.</span>
+        </div>
+        <div class="step">
+          <span class="n">Boundary</span>
+          <span class="t">HTTP contract</span>
+          <span class="d">The only coupling. Palette's pipeline can be rewritten without the skill noticing.</span>
+        </div>
+        <div class="step">
+          <span class="n">Server side</span>
+          <span class="t">Palette</span>
+          <span class="d">Crafter → designer + coder → geometry repair. Node, LibreOffice, Poppler, IBM Plex, the model roster.</span>
+        </div>
+      </div>
+      <p>
+        Two copies of a finished deck therefore exist, and that is by design rather than by
+        accident: the server renders into its own workspace, and the client
+        <em>downloads</em> the result over HTTP into the sandbox. When a slide looks wrong, the
+        server copy holds the extras worth reading — <code>deck.pdf</code>,
+        <code>deck.json</code>, <code>output_js/</code>, raw model predictions.
+      </p>
+
+      <h3>One command, not a sequence</h3>
+      <p>
+        Everything an agent needs for a deck is <code>palette-skill deck</code>. It owns the thread
+        id, the plan file, the polling and the download, and it is idempotent — calling it again
+        <em>resumes</em>. That shape exists for a specific reason, covered in
+        <a href="#failures">§7</a>.
+      </p>
+      <div class="cmd">
+        <div class="cmd-head">the whole agent-side workflow</div>
+<pre><span class="k">palette-skill deck</span> --request <span class="s">"Q3 sales review deck"</span> --dest ./deck --max-seconds 100
+<span class="k">palette-skill deck</span> --dest ./deck --max-seconds 100   <span class="c"># repeat until "done": true</span></pre>
+      </div>
+      <p>
+        Completion is not the model's to assert. Each result carries <code>verified</code>,
+        computed by stat-ing the filesystem — the <code>.pptx</code> exists, is over 20&nbsp;KB, and
+        the preview PNGs are on disk.
+      </p>
+    </section>
+
+    <!-- ─────────────────────────── 2 ─────────────────────────── -->
+    <section id="build">
+      <h2><span class="num">02</span>Building it</h2>
+      <p class="sub">Generated from the server's own code, so the two cannot drift apart quietly.</p>
+
+      <p>
+        <code>SKILL.md</code> is not hand-maintained prose about an API somewhere else. Its
+        volatile parts are fenced regions rendered from the code that defines them. Everything
+        outside a fence is authored by hand and never touched.
+      </p>
+
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Region</th><th>Rendered from</th><th>Why it is generated</th></tr></thead>
+          <tbody>
+            <tr><td><code>execution</code></td><td><code>hosts.py</code></td><td>Tool names and step limits differ per host</td></tr>
+            <tr><td><code>polling</code></td><td><code>hosts.py</code></td><td>The poll window must fit the host's step budget</td></tr>
+            <tr><td><code>delivery</code></td><td><code>hosts.py</code></td><td>"Where is my deck" has a different answer per host</td></tr>
+            <tr><td><code>unreachable</code></td><td><code>contract.py</code></td><td>Local vs remote deployments need opposite advice</td></tr>
+            <tr><td><code>defaults</code></td><td><code>contract.py</code></td><td>Base URL, auth env var, terminal stages</td></tr>
+            <tr><td><code>endpoints</code></td><td><code>contract.py</code></td><td>The API table, with CLI and Python per route</td></tr>
+            <tr><td><code>models</code></td><td><code>config.py</code></td><td>The model menus the server will actually accept</td></tr>
+            <tr><td><code>examples</code></td><td><code>config.py</code></td><td>Curated plans, intersected with what is on disk</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="cmd">
+        <div class="cmd-head">build and verify</div>
+<pre><span class="k">make skill-build</span>    <span class="c"># regenerate payload/*.md</span>
+<span class="k">make skill-check</span>    <span class="c"># exit 1 if a region is stale</span>
+<span class="k">make skill-test</span>     <span class="c"># assert the contract still matches app.py</span>
+<span class="k">make skill</span>          <span class="c"># both checks — run after every Palette change, ~1s</span></pre>
+      </div>
+
+      <div class="note good">
+        <b>The guard runs itself.</b> <code>make hooks</code> installs a pre-commit hook that runs
+        <code>make skill</code> whenever <code>palette_skill/</code>, <code>app.py</code>,
+        <code>config.py</code>, <code>session.py</code>, <code>requirements.txt</code> or
+        <code>pyproject.toml</code> is staged. Add a route without updating the contract and the
+        commit is refused with the fix printed.
+      </div>
+
+      <h3>Installing into an agent</h3>
+      <div class="cmd">
+        <div class="cmd-head">make skill-install CUGA=&lt;path&gt;</div>
+<pre>&lt;agent&gt;/.cuga/skills/palette/
+├── SKILL.md                                     <span class="c">what the agent is told</span>
+├── reference.md                                 <span class="c">loaded on demand</span>
+├── vendor/palette_skill-0.1.0-py3-none-any.whl  <span class="c">the client, httpx-only</span>
+└── .palette-skill.json                          <span class="c">host, version, commit, per-file hashes</span></pre>
+      </div>
+      <p>
+        The vendored wheel is what lets the agent install the client <em>offline</em> — no git
+        access, no registry auth. The manifest is how <code>make skill-status</code> reports which
+        side moved: it holds a <code>client_fingerprint</code> over the client sources plus a hash
+        per markdown file, so drift detection needs no version discipline at all.
+      </p>
+    </section>
+
+    <!-- ─────────────────────────── 3 ─────────────────────────── -->
+    <section id="release">
+      <h2><span class="num">03</span>Releasing it</h2>
+      <p class="sub">For consumers who have no Palette checkout. Two modes, deliberately different.</p>
+
+      <div class="split">
+        <div class="card">
+          <span class="tag">mode one</span>
+          <h5>Local build</h5>
+          <p>Your own testing. Overwrites freely, no ceremony. This is the dev loop and needs no version.</p>
+          <pre>make release</pre>
+        </div>
+        <div class="card">
+          <span class="tag">mode two</span>
+          <h5>A real release</h5>
+          <p>Anything someone else will rely on. Writes <code>__version__</code>, and turns on three guards.</p>
+          <pre>make release VERSION=0.2.0
+git commit -am 'release 0.2.0'
+git tag v0.2.0</pre>
+        </div>
+      </div>
+
+      <div class="note warn">
+        <b>Why <code>VERSION</code> changes the rules.</b> The version is not metadata — it is in
+        every artifact's <em>filename</em>. Ship two different builds as <code>0.1.0</code> and
+        <code>dist/</code> overwrites silently, the recipient cannot tell them apart, and the
+        manifest check that would catch it (<code>"package version moved"</code>) can never fire,
+        because both sides read <code>0.1.0</code>.
+      </div>
+
+      <h4>The three guards</h4>
+      <div class="cmd">
+        <div class="cmd-head">each refuses before anything is written</div>
+<pre><span class="c">$ make release VERSION=bad</span>
+<span class="x">version must look like 1.2.3, got 'bad'</span>
+
+<span class="c">$ make release VERSION=0.2.0        # with uncommitted work</span>
+<span class="x">working tree is dirty — a released artifact records a commit
+that would not describe its contents.</span>
+
+<span class="c">$ make release VERSION=0.2.0        # built once already</span>
+<span class="x">0.2.0 is already built: palette-skill-0.2.0-cuga.tar.gz
+Bump VERSION, or delete those files if you are certain they were never shared.</span></pre>
+      </div>
+      <p>
+        Format is checked first — cheapest, and a typo should not be withheld until you have
+        committed for unrelated reasons.
+      </p>
+
+      <h4>What comes out</h4>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Artifact</th><th>For</th></tr></thead>
+          <tbody>
+            <tr><td><code>palette_skill-&lt;v&gt;-py3-none-any.whl</code></td><td>PyPI, or a direct <code>pip install</code></td></tr>
+            <tr><td><code>palette-skill-&lt;v&gt;-cuga.tar.gz</code></td><td>drop into a CUGA skills root</td></tr>
+            <tr><td><code>palette-skill-&lt;v&gt;-claude-code.tar.gz</code></td><td>drop into <code>~/.claude/skills/</code></td></tr>
+            <tr><td><code>palette-skill-&lt;v&gt;-generic.tar.gz</code></td><td>any other host</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Each tarball is a complete skill folder rendered for that host — markdown, the client
+        wheel, a manifest. Roughly 80&nbsp;KB, no network, no build step, no Palette source
+        required. Untar into a skills root and you are done, exactly like a
+        <code>skills.sh</code> install.
+      </p>
+
+      <h4>Pinning a deployment</h4>
+      <div class="cmd">
+        <div class="cmd-head">consumers then need no environment at all</div>
+<pre><span class="k">make release</span> VERSION=<span class="s">0.2.0</span> BASE_URL=<span class="s">https://palette.example.cloud</span></pre>
+      </div>
+      <p>
+        A pinned artifact also <em>drops</em> local advice: it will not tell an agent to run
+        <code>palette-skill serve ensure</code>, because that would start a second, local Palette
+        with none of the user's data. Pinning <code>127.0.0.1</code> is still local and keeps it.
+        <code>$PALETTE_URL</code> overrides a pin either way, so pinning is a default rather than a
+        commitment.
+      </p>
+      <div class="note">
+        <b>A release is pinned to a Palette version.</b> The model menus and example plans are
+        rendered from that checkout's <code>config.py</code> and then frozen — a skill advertising
+        <code>palette-qwen-32b</code> has to ship with a server that serves it. So the artifact
+        version tracks Palette, not the client.
+      </div>
+    </section>
+
+    <!-- ─────────────────────────── 4 ─────────────────────────── -->
+    <section id="update">
+      <h2><span class="num">04</span>Keeping it current</h2>
+      <p class="sub">Most changes need a reinstall, not a release.</p>
+
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Loop</th><th>Command</th><th>Needs a version?</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><b>Dev</b> — you and your agent, one machine</td>
+              <td><code>make skill-install CUGA=…</code></td>
+              <td>No — drift detection is hash-based</td>
+            </tr>
+            <tr>
+              <td><b>Ship</b> — anyone without a checkout</td>
+              <td><code>make release VERSION=X.Y.Z</code></td>
+              <td>Yes</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Does a given change even touch the skill?</h3>
+      <p>Don't work it out by hand — <code>make skill</code> answers it in about a second. Roughly:</p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Changed</th><th>Skill affected?</th></tr></thead>
+          <tbody>
+            <tr><td><code>contract.py</code>, <code>client.py</code>, <code>cli.py</code>, <code>hosts.py</code>, <code>payload/</code></td>
+                <td><b>Yes</b> — it <em>is</em> the skill</td></tr>
+            <tr><td><code>app.py</code> routes or request models</td>
+                <td><b>Yes</b> — the contract test fails until you update it</td></tr>
+            <tr><td><code>config.py</code> model roster or example plans</td>
+                <td><b>Yes</b> — generated regions re-render</td></tr>
+            <tr><td>renderer, session internals, the web UI</td>
+                <td>Usually not — the HTTP contract is the only coupling</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Checking what an agent actually has</h3>
+      <div class="cmd">
+        <div class="cmd-head">which side moved?</div>
+<pre><span class="k">make skill-status</span> CUGA=../cuga-agent
+<span class="o">palette skill at …/.cuga/skills/palette is in sync (v0.1.0, host cuga, commit c136b221a)</span></pre>
+      </div>
+      <div class="note warn">
+        <b>One stale copy hides from both repos.</b> The agent installs the client into a venv
+        <em>inside</em> its sandbox — on CUGA that is <code>/tmp/.venv</code>, shared across
+        threads. A stale client there keeps running old code after you have installed new code, and
+        nothing in either checkout will tell you. <code>rm -rf /tmp/.venv</code> is part of a full
+        reset for exactly this reason.
+      </div>
+    </section>
+
+    <!-- ─────────────────────────── 5 ─────────────────────────── -->
+    <section id="use">
+      <h2><span class="num">05</span>Using it — CUGA and Claude Code</h2>
+      <p class="sub">One skill, rendered per host. The differences are not cosmetic.</p>
+
+      <p>
+        Almost all of <code>SKILL.md</code> describes a service and is true anywhere. What is
+        <em>not</em> portable is how an agent executes anything: the tool it shells out with,
+        whether it may import the client in-process, how long a single step may run, and where a
+        finished file surfaces for the user. Those come from a host profile.
+      </p>
+
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Host</th><th>Shell tool</th><th class="num-col">Poll window</th><th>Inline Python?</th><th>Where the deck surfaces</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><b>CUGA</b></td><td><code>run_command</code></td><td class="num-col">100s</td>
+              <td>No — code blocks run under an import allowlist with no <code>httpx</code></td>
+              <td>The <b>Files</b> panel for that conversation</td>
+            </tr>
+            <tr>
+              <td><b>Claude Code</b></td><td><code>Bash</code></td><td class="num-col">240s</td>
+              <td>Yes</td>
+              <td>The user's own filesystem — the path <em>is</em> the answer</td>
+            </tr>
+            <tr>
+              <td><b>Generic</b></td><td>your shell tool</td><td class="num-col">25s</td>
+              <td>Yes</td>
+              <td>Path only — nothing assumed about the host</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note">
+        <b>The poll window is load-bearing, not a detail.</b> It decides how many steps a deck
+        costs, and that is what runs out first. A ten-minute build is twenty-odd polls at 25s and
+        six at 100s — and an agent abandons the twenty long before any step limit is reached.
+        Claude Code's <code>Bash</code> allows ten minutes, so one call can cover most of a build.
+      </div>
+
+      <h3>CUGA</h3>
+      <p>
+        <code>cuga start demo_palette</code> starts a supervisor agent — a <em>Deck Builder</em>
+        rather than a generic skills demo. The preset raises two settings on your behalf, both
+        with <code>setdefault</code> so an explicit env var still wins:
+      </p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Setting</th><th class="num-col">Default</th><th class="num-col">Preset</th><th>Why</th></tr></thead>
+          <tbody>
+            <tr><td><code>sandbox_execution_timeout</code></td><td class="num-col">30s</td><td class="num-col"><b>120s</b></td>
+                <td>Each bounded poll is one step. At 30s a long build is twenty-odd steps, and agents give up around step 40 of 100 — with the build finishing on the server and nobody collecting it.</td></tr>
+            <tr><td><code>cuga_lite_nl_auto_continue</code></td><td class="num-col">false</td><td class="num-col"><b>true</b></td>
+                <td>Mid-build the model often writes a progress note as prose with no code. That reads as a finished answer and ends the run.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The skill's CUGA profile polls at 100s to fit inside the 120s step; a test keeps the two matched.</p>
+
+      <h3>Claude Code</h3>
+      <p>
+        Same skill, different rendering. Untar the <code>claude-code</code> tarball into
+        <code>~/.claude/skills/</code> and it is discovered like any other. The generated execution
+        section names <code>Bash</code>, <code>Read</code>, <code>Write</code> rather than CUGA's
+        tools, offers the Python API directly (no import allowlist to work around), and omits
+        CUGA's step-limit warnings — Claude Code does not cap a step tightly enough for them to
+        matter. It also drops the Files-panel guidance, because there is no such panel and the
+        absolute path is the whole answer.
+      </p>
+      <div class="note good">
+        <b>Not overfitted.</b> Adding a host means adding a profile to
+        <code>hosts.py</code> — not forking the skill. Tests assert that CUGA's tarball never leaks
+        the string <code>Bash</code>, that Claude Code's never leaks <code>run_command</code>, and
+        that each ships its own poll window.
+      </div>
+
+      <h3>Reading the result</h3>
+      <p>
+        When <code>verified</code> is true the agent is told to report, in order: the slide count
+        and title, the <em>absolute</em> <code>pptx_path</code> — never the relative
+        <code>pptx</code>, which names a working directory the user has never seen — and, on hosts
+        that have one, that the deck is already downloadable from the UI.
+      </p>
+    </section>
+
+    <!-- ─────────────────────────── 6 ─────────────────────────── -->
+    <section id="test">
+      <h2><span class="num">06</span>What testing means</h2>
+      <p class="sub">Nine tiers, ordered by what they need. Stop wherever your environment stops.</p>
+
+      <div class="scroll">
+        <table>
+          <thead><tr><th class="num-col">Tier</th><th>Needs</th><th>Answers</th></tr></thead>
+          <tbody>
+            <tr><td class="num-col">1</td><td>nothing</td><td>Does the skill still describe this server?</td></tr>
+            <tr><td class="num-col">2</td><td>nothing</td><td>Do the drift guards actually fire when you break something?</td></tr>
+            <tr><td class="num-col">3</td><td>Node, LibreOffice, Poppler</td><td>Can Palette run here at all?</td></tr>
+            <tr><td class="num-col">4</td><td>an agent checkout</td><td>Does the host discover and load it?</td></tr>
+            <tr><td class="num-col">5</td><td>+ Palette running</td><td>Does the sandbox reach the server?</td></tr>
+            <tr><td class="num-col">6</td><td>+ LLM credentials</td><td>Does a model pick the skill unprompted?</td></tr>
+            <tr><td class="num-col">7</td><td>+ a RITS key</td><td>Does markdown become a real <code>.pptx</code>?</td></tr>
+            <tr><td class="num-col">8</td><td>all of the above</td><td>Does it work for a person, by hand?</td></tr>
+            <tr><td class="num-col">9</td><td>nothing</td><td>Can someone with no checkout install the release?</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Tier 2 is worth doing once</h3>
+      <p>
+        So you trust the guard rather than taking its word. Add a route to <code>app.py</code> and
+        watch <code>make skill-test</code> name it; add a model to <code>config.py</code> and watch
+        <code>make skill-check</code> call the payload stale; stage a change and watch the
+        pre-commit hook refuse the commit.
+      </p>
+
+      <h3>Tier 7 asserts on the artifact, not the transcript</h3>
+      <p>
+        A long agent run gets context-summarised, which erases the very lines a transcript check
+        would look for. So the tests open the <code>.pptx</code>: a valid OOXML package, the
+        expected number of slide parts, a preview PNG per slide, a minimum file size — and
+        <b>IBM Plex</b> in the slide XML. Palette's renderer forces that typeface and substitutes
+        Calibri for anything else, so a deck hand-written with <code>pptxgenjs</code> defaults
+        cannot carry it. It is provenance that cannot be summarised away.
+      </p>
+      <p>Three routes in, matching how people actually arrive at a deck:</p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Route</th><th>Prompt shape</th><th>Why it exists</th></tr></thead>
+          <tbody>
+            <tr><td><b>A</b></td><td>a plan already in Palette's format</td><td>fast path, Stage 2 only</td></tr>
+            <tr><td><b>B</b></td><td>raw unstructured notes</td><td>forces Stage 1 first</td></tr>
+            <tr><td><b>C</b></td><td><em>"Draft a plan for a Q3 sales review, show it to me, then build it"</em></td><td>the regression test — see below</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note">
+        <b>Route C is the one that finds things.</b> A and B name the stage and say "poll until the
+        build finishes"; under that much instruction the agent cannot fail the way it fails in the
+        wild. C says what a person says. Every skill bug found so far came from a prompt shaped
+        like C — none was caught by a unit test.
+      </div>
+      <p>
+        Route C also asserts that <code>.palette-deck.json</code> exists with
+        <code>"stage": "done"</code>. That file is written by <code>palette-skill deck</code> and by
+        nothing else, so its absence proves the agent hand-drove the sequence — which is how a deck
+        goes missing while being reported as built.
+      </p>
+
+      <h3>Verifying a deck by hand</h3>
+      <div class="cmd">
+        <div class="cmd-head">three independent signals — believe the files, not the chat</div>
+<pre><span class="c"># 1. the orchestrator ran (written by `palette-skill deck`, nothing else)</span>
+<span class="k">cat</span> cuga_workspace/*/deck/.palette-deck.json
+
+<span class="c"># 2. one session carried both stages</span>
+<span class="k">grep</span> -E <span class="s">"draft_async|build_async"</span> ~/.local/state/palette/server.log | tail -2
+
+<span class="c"># 3. it came out of Palette's renderer</span>
+<span class="k">unzip</span> -p cuga_workspace/*/deck/deck.pptx ppt/slides/slide1.xml | grep -c <span class="s">"IBM Plex"</span></pre>
+      </div>
+      <p>
+        <b>Read the thread ids, not the line count.</b> One id carrying both a
+        <code>draft_async</code> and a <code>build_async</code> is a healthy run. Several ids with
+        no build is the signature failure.
+      </p>
+
+      <h3>The docs are tested too</h3>
+      <p>
+        Every <code>make</code> target a doc tells you to run must exist; every relative link must
+        resolve; every <code>from palette_skill import …</code> a doc prints is actually executed;
+        cross-references to <code>SKILL.md</code> headings must resolve; reversed guidance is
+        banned by string; and exactly one document may carry a runnable start-to-deck sequence.
+      </p>
+    </section>
+
+    <!-- ─────────────────────────── 7 ─────────────────────────── -->
+    <section id="failures">
+      <h2><span class="num">07</span>Failures worth knowing</h2>
+      <p class="sub">Every one was an accurate instruction that was not followable.</p>
+
+      <p>
+        These are recorded because they explain why the skill is shaped the way it is. None was
+        caught by a test; each was found by running the thing and reading the server log.
+      </p>
+
+      <div class="scroll">
+        <table>
+          <thead><tr><th>What happened</th><th>Why it read as reasonable</th><th>The structural fix</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Agent announced a finished deck. Server log: four <code>draft_async</code> calls, zero builds.</td>
+              <td>Each retry started a fresh draft and orphaned the previous session. Nothing in the transcript looked wrong.</td>
+              <td><code>run_deck</code> owns the thread id; completion is computed by stat-ing files, not asserted.</td>
+            </tr>
+            <tr>
+              <td>Agent stopped mid-build: <em>"let me know if you'd like me to keep checking."</em></td>
+              <td>Asking permission is polite. But prose with no code reads as a final answer, and the build finished uncollected.</td>
+              <td>Every turn between start and <code>done</code> must contain a <code>deck</code> call; the preset enables auto-continue.</td>
+            </tr>
+            <tr>
+              <td>Agent gave up at step 39 of 100 while the build was still running.</td>
+              <td>A 25s poll made a ten-minute build cost ~24 steps. The agent ran out of patience, not budget.</td>
+              <td><code>poll_seconds</code> per host, sized to that host's step budget; a test keeps them matched.</td>
+            </tr>
+            <tr>
+              <td>Agent paused for approval that had already been given.</td>
+              <td>The docs said <em>"draft, show me, then build it"</em> should pause — but that phrasing carries its own permission.</td>
+              <td><code>--pause-after-plan</code> is for an explicit gate only; the distinction is pinned by a test.</td>
+            </tr>
+            <tr>
+              <td>User could not find a deck the agent had genuinely built.</td>
+              <td><code>"pptx": "deck/deck.pptx"</code> is correct <em>inside the sandbox</em> and useless outside it.</td>
+              <td><code>pptx_path</code> and <code>dir</code> are absolute, and <code>dir</code> is returned from the first call.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note warn">
+        <b>The pattern.</b> Prose cannot fix a behaviour the model has a reason to prefer. Three
+        escalating instructions failed to stop a false completion; what stopped it was moving the
+        claim out of prose entirely and into a flag the tool computes. The same lesson applies to
+        the <code>next</code> field: an instruction read thirty thousand tokens ago competes with
+        the pull toward summarising, so the next command now travels <em>in the output the agent
+        just printed</em>.
+      </div>
+    </section>
+
+    <!-- ─────────────────────────── 8 ─────────────────────────── -->
+    <section id="docs">
+      <h2><span class="num">08</span>Which doc is for what</h2>
+      <p class="sub">Split by what you are trying to do — so a command appears in exactly one of them.</p>
+
+      <div class="docs">
+        <div class="doc">
+          <a class="name" href="https://github.com/IBM/project-palette/blob/palette_skill/palette_skill/CHEATSHEET.md">palette_skill/CHEATSHEET.md</a>
+          <span class="when"><b>You want to do something now.</b> Every runnable command: five reset
+          levels from "nothing" to a full two-repo nuke, build, release, install, run, verify — plus
+          a symptom&nbsp;→&nbsp;fix table. §0 is the whole loop in six lines.</span>
+        </div>
+        <div class="doc">
+          <a class="name" href="https://github.com/IBM/project-palette/blob/palette_skill/palette_skill/GUIDE.md">palette_skill/GUIDE.md</a>
+          <span class="when"><b>You are changing the skill.</b> What a skill is, the architecture
+          diagram, what each <code>make</code> target produces, when to cut a release, and how
+          remote deployments differ.</span>
+        </div>
+        <div class="doc">
+          <a class="name" href="https://github.com/IBM/project-palette/blob/palette_skill/palette_skill/TESTING.md">palette_skill/TESTING.md</a>
+          <span class="when"><b>You want to trust it.</b> The nine tiers in full, what each failure
+          looks like on the wire, and an honest list of what none of it catches.</span>
+        </div>
+        <div class="doc">
+          <a class="name" href="https://github.com/IBM/project-palette/blob/palette_skill/palette_skill/README.md">palette_skill/README.md</a>
+          <span class="when"><b>You are reading the code.</b> Why the client is shaped this way, and
+          a module-by-module layout.</span>
+        </div>
+        <div class="doc">
+          <a class="name" href="https://github.com/IBM/project-palette/blob/palette_skill/palette_skill/payload/SKILL.md">palette_skill/payload/SKILL.md</a>
+          <span class="when"><b>You want to know what the agent is told.</b> The instructions
+          themselves. Largely generated — read it rather than editing inside the fenced regions.</span>
+        </div>
+        <div class="doc">
+          <a class="name" href="https://github.com/IBM/project-palette/blob/palette_skill/palette_skill/payload/reference.md">palette_skill/payload/reference.md</a>
+          <span class="when"><b>You are calling the client from Python.</b> Full signatures,
+          <code>run_deck</code>'s state machine, error types, the CLI surface.</span>
+        </div>
+        <div class="doc">
+          <a class="name" href="https://github.com/IBM/project-palette/blob/palette_skill/README.md">README.md</a>
+          <span class="when"><b>You want to run Palette itself.</b> Install, the web UI, config,
+          containers, deployment — and the doc map this page mirrors.</span>
+        </div>
+        <div class="doc">
+          <a class="name" href="https://github.com/cuga-project/cuga-agent/blob/palette/tests/e2e/skills/README.md">cuga-agent/tests/e2e/skills/README.md</a>
+          <span class="when"><b>You are running the deck tests.</b> The CUGA side: what the three
+          routes assert and why the bare-request one is deliberately unscaffolded.</span>
+        </div>
+      </div>
+
+      <hr class="soft">
+
+      <h4>Source worth reading</h4>
+      <ul>
+        <li><a href="https://github.com/IBM/project-palette/blob/palette_skill/palette_skill/contract.py">contract.py</a> — every endpoint, written once. The client, the docs and the tests all read it.</li>
+        <li><a href="https://github.com/IBM/project-palette/blob/palette_skill/palette_skill/hosts.py">hosts.py</a> — the host profiles. The only host-specific part of the whole skill.</li>
+        <li><a href="https://github.com/IBM/project-palette/blob/palette_skill/palette_skill/client.py">client.py</a> — <code>PaletteClient</code> and <code>run_deck</code>'s resumable state machine.</li>
+        <li><a href="https://github.com/IBM/project-palette/blob/palette_skill/palette_skill/build_skill.py">build_skill.py</a> — the region renderers.</li>
+        <li><a href="https://github.com/IBM/project-palette/blob/palette_skill/palette_skill/release.py">release.py</a> — artifact assembly and the release guards.</li>
+        <li><a href="https://github.com/IBM/project-palette/blob/palette_skill/Makefile">Makefile</a> — every target, with <code>make help</code> as the menu.</li>
+      </ul>
+    </section>
+
+  </main>
+
+  <footer>
+    Palette is <a href="https://github.com/IBM/project-palette/tree/palette_skill">IBM/project-palette</a>
+    on the <code>palette_skill</code> branch; the CUGA integration is
+    <a href="https://github.com/cuga-project/cuga-agent/tree/palette">cuga-project/cuga-agent</a>
+    on <code>palette</code>. All file links above point at those branches.
+    Start at the <a href="https://github.com/IBM/project-palette/blob/palette_skill/palette_skill/CHEATSHEET.md">cheatsheet</a> —
+    it is the only doc that tells you what to type.
+  </footer>
+
+</div>

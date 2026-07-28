@@ -622,6 +622,30 @@ class TestPlanApproval:
         assert building["done"] is False
         assert "--max-seconds" in building["next"]
 
+    def test_mid_build_polls_carry_it_too(self, tmp_path: Path) -> None:
+        """The poll payload is the one an agent sees fifteen times, not once.
+
+        `next` and `dir` were added to the stage *transitions* first — each seen
+        exactly once — and missed on the polls, which are the long middle of a
+        build and precisely where an agent drifts into narrating instead of
+        calling again. Every non-terminal result must carry both.
+        """
+        from palette_skill.client import Progress, run_deck
+
+        class _Building(self._FakeDraft):
+            def wait(self, thread_id, max_seconds=25.0):
+                return Progress(stage="build", message="coding slides", current=2, total=9)
+
+        pal = _Building()
+        self._advance(pal, tmp_path, request="Q3")
+        self._advance(pal, tmp_path)                      # drafting -> building
+        polled = run_deck(pal, dest=tmp_path, max_seconds=30)
+
+        assert polled["done"] is False
+        assert "progress" in polled
+        assert "--max-seconds" in polled["next"], "a mid-build poll must say what to run next"
+        assert Path(polled["dir"]).is_absolute(), "a mid-build poll must say where the deck lands"
+
     def test_a_paused_plan_points_at_approve_not_at_polling(self, tmp_path: Path) -> None:
         """Telling a waiting agent to poll would spin it against a stopped machine."""
         pal = self._FakeDraft()

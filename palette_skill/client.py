@@ -761,7 +761,7 @@ def run_deck(
     if stage == "drafting":
         snapshot = pal.wait_draft(thread_id, max_seconds=max_seconds)
         if snapshot.stage not in contract.DRAFT_TERMINAL_STAGES:
-            return {**state, "done": False, "progress": str(snapshot)}
+            return advancing({**state, "done": False, "progress": str(snapshot)})
         if snapshot.failed:
             state["stage"] = "failed"
             _save_state(dest, state)
@@ -818,7 +818,7 @@ def run_deck(
     if stage == "building":
         snapshot = pal.wait(thread_id, max_seconds=max_seconds)
         if not snapshot.terminal:
-            return {**state, "done": False, "progress": str(snapshot)}
+            return advancing({**state, "done": False, "progress": str(snapshot)})
         if snapshot.failed:
             state["stage"] = "failed"
             _save_state(dest, state)

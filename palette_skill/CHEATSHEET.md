@@ -5,7 +5,8 @@ Every runnable command for the skill, in one place: **reset → build → releas
 
 The others explain rather than instruct — [GUIDE.md](GUIDE.md) for what the
 skill is and why, [TESTING.md](TESTING.md) for the verification ladder,
-[README.md](README.md) for the client's own layout. A map of all of them is in
+[README.md](README.md) for the client's own layout, and `docs/skill-handbook.html`
+in the repo root for the whole picture on one page. A map of all of them is in
 the repo root README.
 
 Two repos are involved. Throughout:

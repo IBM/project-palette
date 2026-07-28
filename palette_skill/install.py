@@ -177,6 +177,37 @@ def install(
     # disk is rendered for one host at a time, so installing for another
     # without regenerating would ship the wrong execution section.
     can_vendor = build_skill.in_checkout()
+
+    # payload/ holds exactly one host's rendering at a time. Installing for a
+    # *different* host — or pinning a base URL — therefore leaves the checkout
+    # describing something it should not: `make skill-check` fails, and
+    # committing it ships the wrong execution section to everyone else.
+    # `check()` already snapshots for this reason; installing needs it just as
+    # much, and did not have it. Restore whenever we diverged.
+    diverges = bool(base_url) or bool(host_key and host_key != hosts.DEFAULT_HOST)
+    snapshot = {p: p.read_bytes() for p in PAYLOAD_DIR.glob("*.md")} if diverges else {}
+    try:
+        return _install_unguarded(
+            target,
+            force_regenerate=force_regenerate,
+            host_key=host_key,
+            base_url=base_url,
+            can_vendor=can_vendor,
+        )
+    finally:
+        for path, content in snapshot.items():
+            path.write_bytes(content)
+
+
+def _install_unguarded(
+    target: Path,
+    *,
+    force_regenerate: bool,
+    host_key: str | None,
+    base_url: str | None,
+    can_vendor: bool,
+) -> dict[str, Any]:
+    """The install proper. Callers go through :func:`install`, which restores payload/."""
     if force_regenerate or base_url or not can_vendor or (host_key and host_key != hosts.DEFAULT_HOST):
         build_skill.run(check=False, host=host_key, base_url=base_url, vendored=can_vendor)
     elif build_skill.run(check=True, host=host_key) != 0:

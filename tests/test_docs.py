@@ -328,3 +328,42 @@ def test_only_the_cheatsheet_carries_the_full_run_sequence() -> None:
         f"{offenders} print the run command in a code fence. Keep runnable "
         "sequences in CHEATSHEET.md and link to it, or they drift apart."
     )
+
+
+HANDBOOK = REPO_ROOT / "docs" / "skill-handbook.html"
+
+
+class TestHandbook:
+    """The one-page HTML overview links to GitHub by branch, so links can rot.
+
+    A relative markdown link fails visibly the moment a file moves. A GitHub
+    URL keeps rendering and quietly 404s for whoever clicks it, which is worse,
+    and neither the browser nor a reader can tell from the page itself.
+    """
+
+    BRANCH = "palette_skill"
+    BASE = f"https://github.com/IBM/project-palette/blob/{BRANCH}/"
+
+    def test_it_exists_and_is_outside_the_wheel(self) -> None:
+        assert HANDBOOK.is_file()
+        # package-data ships palette_skill/payload/*.md only; a 44 KB page has
+        # no business in a wheel that lands in every agent sandbox.
+        assert "palette_skill" not in HANDBOOK.relative_to(REPO_ROOT).parts
+
+    def test_every_palette_link_points_at_a_file_that_exists(self) -> None:
+        text = HANDBOOK.read_text(encoding="utf-8")
+        missing = [
+            path for path in re.findall(re.escape(self.BASE) + r"([\w./-]+)", text)
+            if not (REPO_ROOT / path).exists()
+        ]
+        assert not missing, f"handbook links to files not in this repo: {sorted(set(missing))}"
+
+    def test_no_link_points_at_the_wrong_branch(self) -> None:
+        """This work lives on a branch; /blob/main/ would 404 for every reader."""
+        text = HANDBOOK.read_text(encoding="utf-8")
+        assert "project-palette/blob/main/" not in text
+        assert "cuga-agent/blob/main/" not in text
+
+    def test_it_is_linked_from_the_readme(self) -> None:
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        assert "docs/skill-handbook.html" in readme
