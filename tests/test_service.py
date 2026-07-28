@@ -433,3 +433,159 @@ class TestPackaging:
             f"only in requirements.txt: {sorted(requirements - extra)}; "
             f"only in the extra: {sorted(extra - requirements)}"
         )
+
+
+class TestDeckOrchestration:
+    """`run_deck` exists because agents lose the thread when they drive by hand.
+
+    Twice in the wild an agent drafted, never built, and reported success. The
+    orchestrator owns the session and computes completion from disk, so the
+    claim is not the model's to make.
+    """
+
+    def test_verify_rejects_a_missing_deck(self, tmp_path: Path) -> None:
+        from palette_skill.client import _verify
+
+        assert _verify(tmp_path)["verified"] is False
+
+    def test_verify_rejects_a_stub_pptx(self, tmp_path: Path) -> None:
+        """A 12 KB file is a failed render, not a deck."""
+        from palette_skill.client import _verify
+
+        (tmp_path / "deck.pptx").write_bytes(b"x" * 5_000)
+        (tmp_path / "slide-01.png").write_bytes(b"\x89PNG" + b"x" * 9_000)
+        assert _verify(tmp_path)["verified"] is False
+
+    def test_verify_rejects_a_deck_with_no_previews(self, tmp_path: Path) -> None:
+        from palette_skill.client import _verify
+
+        (tmp_path / "deck.pptx").write_bytes(b"x" * 50_000)
+        assert _verify(tmp_path)["verified"] is False
+
+    def test_verify_accepts_a_real_deck(self, tmp_path: Path) -> None:
+        from palette_skill.client import _verify
+
+        (tmp_path / "deck.pptx").write_bytes(b"x" * 50_000)
+        (tmp_path / "slide-01.png").write_bytes(b"\x89PNG" + b"x" * 9_000)
+        checked = _verify(tmp_path)
+        assert checked["verified"] is True
+        assert checked["slide_count"] == 1
+
+    def test_state_survives_between_calls(self, tmp_path: Path) -> None:
+        """Resumability is the whole point — a retry must not orphan the session."""
+        from palette_skill.client import _load_state, _save_state
+
+        _save_state(tmp_path, {"stage": "building", "thread_id": "skill-abc"})
+        assert _load_state(tmp_path)["thread_id"] == "skill-abc"
+
+    def test_corrupt_state_is_treated_as_absent(self, tmp_path: Path) -> None:
+        from palette_skill.client import DECK_STATE, _load_state
+
+        (tmp_path / DECK_STATE).write_text("{not json")
+        assert _load_state(tmp_path) == {}
+
+    def test_done_state_is_reverified_not_trusted(self, tmp_path: Path) -> None:
+        """A stored 'done' with no files must not report done."""
+        from palette_skill.client import PaletteClient, _save_state, run_deck
+
+        _save_state(tmp_path, {"stage": "done", "thread_id": "skill-abc"})
+        result = run_deck(PaletteClient("http://unused"), dest=tmp_path)
+        assert result["done"] is True  # stage is terminal…
+        assert result["verified"] is False, "…but the files are gone, and that must show"
+
+
+class TestPlanApproval:
+    """"Draft a plan, show it to me, then build it" — the commonest phrasing.
+
+    It used to be answered by a doc section telling the agent to drive
+    `start-draft` / `wait-draft` / `draft-result` itself, which is the very
+    hand-managed sequence `run_deck` was written to abolish. An agent given
+    that prompt followed the section and reproduced the original failure
+    exactly: four drafts, four thread ids, no build. So the pause belongs
+    inside the orchestrator, where the session is still owned.
+    """
+
+    class _FakeDraft:
+        """A client stub that drafts instantly and records what was built."""
+
+        def __init__(self, plan: str = "# Plan\n" + "section. " * 40) -> None:
+            self.plan = plan
+            self.built: list[tuple[str, str]] = []
+
+        def start_draft(self, request: str) -> str:
+            return "skill-fake"
+
+        def wait_draft(self, thread_id, max_seconds=25.0):
+            from palette_skill.client import Progress
+
+            return Progress(stage="draft_done")
+
+        def draft_result(self, thread_id) -> str:
+            return self.plan
+
+        def start_build(self, plan, thread_id=None):
+            self.built.append((thread_id, plan))
+            return thread_id or "skill-fake"
+
+    def _advance(self, pal, dest: Path, **kwargs):
+        from palette_skill.client import run_deck
+
+        return run_deck(pal, dest=dest, **kwargs)
+
+    def test_pause_stops_before_the_expensive_stage(self, tmp_path: Path) -> None:
+        pal = self._FakeDraft()
+        self._advance(pal, tmp_path, request="Q3 sales review", pause_after_plan=True)
+        result = self._advance(pal, tmp_path)
+
+        assert result["stage"] == "plan-ready"
+        assert result["done"] is False
+        assert pal.built == [], "the build must not start until the user approves"
+        assert result["plan_markdown"].startswith("# Plan")
+        assert (tmp_path / "plan.md").is_file()
+
+    def test_pause_is_idempotent_while_waiting(self, tmp_path: Path) -> None:
+        """Polling while the user reads must not build, and must not re-draft."""
+        pal = self._FakeDraft()
+        self._advance(pal, tmp_path, request="Q3 sales review", pause_after_plan=True)
+        for _ in range(3):
+            result = self._advance(pal, tmp_path)
+        assert result["stage"] == "plan-ready"
+        assert pal.built == []
+
+    def test_approve_builds_in_the_same_session(self, tmp_path: Path) -> None:
+        """One thread id across draft and build — that is what stops the orphaning."""
+        pal = self._FakeDraft()
+        first = self._advance(pal, tmp_path, request="Q3 sales review", pause_after_plan=True)
+        self._advance(pal, tmp_path)
+        result = self._advance(pal, tmp_path, approve=True)
+
+        assert result["stage"] == "building"
+        assert len(pal.built) == 1
+        assert pal.built[0][0] == first["thread_id"]
+
+    def test_approve_builds_the_edited_plan(self, tmp_path: Path) -> None:
+        """If the user asked for changes, the build must use them."""
+        pal = self._FakeDraft()
+        self._advance(pal, tmp_path, request="Q3 sales review", pause_after_plan=True)
+        self._advance(pal, tmp_path)
+        (tmp_path / "plan.md").write_text("# Plan, revised\n" + "section. " * 40)
+        self._advance(pal, tmp_path, approve=True)
+
+        assert "revised" in pal.built[0][1], "the build replayed the original draft"
+
+    def test_without_pause_it_builds_straight_through(self, tmp_path: Path) -> None:
+        pal = self._FakeDraft()
+        self._advance(pal, tmp_path, request="Q3 sales review")
+        result = self._advance(pal, tmp_path)
+        assert result["stage"] == "building"
+        assert len(pal.built) == 1
+
+    def test_an_empty_plan_is_refused_before_the_build(self, tmp_path: Path) -> None:
+        """The crafter really did return 0 chars once. Four minutes to render it."""
+        from palette_skill.client import PaletteError
+
+        pal = self._FakeDraft(plan="")
+        self._advance(pal, tmp_path, request="Q3 sales review")
+        with pytest.raises(PaletteError, match="not a usable plan"):
+            self._advance(pal, tmp_path)
+        assert pal.built == []

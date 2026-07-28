@@ -22,6 +22,7 @@ path with a clear message rather than a 404.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
@@ -611,3 +612,194 @@ def _error_text(response: httpx.Response) -> str:
             if payload.get(key):
                 return str(payload[key])
     return str(payload)[:500]
+
+
+# --------------------------------------------------------------------------
+# One resumable operation, owned by the tool rather than the agent
+# --------------------------------------------------------------------------
+
+DECK_STATE = ".palette-deck.json"
+
+
+def _state_path(dest: Path) -> Path:
+    return Path(dest) / DECK_STATE
+
+
+def _load_state(dest: Path) -> dict[str, Any]:
+    path = _state_path(dest)
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+
+
+def _save_state(dest: Path, state: Mapping[str, Any]) -> None:
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    _state_path(dest).write_text(json.dumps(dict(state), indent=2), encoding="utf-8")
+
+
+def _verify(dest: Path) -> dict[str, Any]:
+    """Stat what is actually on disk. This is the only thing allowed to say 'done'.
+
+    Every prose instruction telling an agent to check its own work has been
+    ignored at least once. So the claim of completion is computed here, from
+    the filesystem, and the agent's job is only to relay it.
+    """
+    dest = Path(dest)
+    pptx = dest / "deck.pptx"
+    slides = sorted(dest.glob("slide-*.png"))
+    pptx_bytes = pptx.stat().st_size if pptx.is_file() else 0
+    return {
+        "pptx": str(pptx) if pptx.is_file() else None,
+        "pptx_bytes": pptx_bytes,
+        "slides": [str(p) for p in slides],
+        "slide_count": len(slides),
+        # A deck that "succeeded" at 12 KB or with no previews did not succeed.
+        "verified": bool(pptx.is_file() and pptx_bytes > 20_000 and slides),
+    }
+
+
+#: A plan this short is not a plan. The crafter can return an empty document
+#: on a terminal-but-successful draft, and building from it wastes four
+#: minutes to produce nothing — so it is caught here, where it is still cheap.
+MIN_PLAN_CHARS = 200
+
+
+def run_deck(
+    pal: "PaletteClient",
+    *,
+    dest: str | Path,
+    request: str | None = None,
+    plan_file: str | Path | None = None,
+    max_seconds: float = 25.0,
+    pause_after_plan: bool = False,
+    approve: bool = False,
+) -> dict[str, Any]:
+    """Advance one deck as far as possible, then return where it got to.
+
+    Idempotent and resumable: call it repeatedly with the same ``dest`` until
+    ``done`` is true. It owns the thread id, the plan file, the polling and the
+    download, so an agent cannot lose the session by retrying — the previous
+    failure mode, where each retry silently started a fresh draft and orphaned
+    the last one.
+
+    ``pause_after_plan`` stops at ``plan-ready`` so the plan can be shown and
+    approved before the expensive stage runs. This exists because the flow it
+    covers — *draft it, show me, then build it* — is how people actually ask,
+    and the only alternative was driving the three underlying calls by hand.
+    That is precisely the arrangement this function replaced, so leaving it as
+    the documented answer for the commonest phrasing put the failure straight
+    back. Approval changes who decides, never who tracks the session.
+
+    ``done`` is never asserted from the model's belief. It is computed by
+    stat-ing the files.
+    """
+    dest = Path(dest)
+    state = _load_state(dest)
+    stage = state.get("stage", "new")
+
+    # Already finished? Re-verify rather than trusting the stored flag.
+    if stage == "done":
+        return {"stage": "done", "done": True, "thread_id": state.get("thread_id"), **_verify(dest)}
+
+    if stage == "new":
+        if plan_file:
+            plan = Path(plan_file).read_text(encoding="utf-8")
+            thread_id = pal.start_build(plan)
+            state = {"stage": "building", "thread_id": thread_id, "source": str(plan_file)}
+        else:
+            if not request:
+                raise PaletteError("run_deck: pass --request or --plan-file")
+            thread_id = pal.start_draft(request)
+            state = {
+                "stage": "drafting",
+                "thread_id": thread_id,
+                "request": request,
+                "pause_after_plan": pause_after_plan,
+            }
+        _save_state(dest, state)
+        return {**state, "done": False, "note": "started; call again to advance"}
+
+    thread_id = state["thread_id"]
+
+    if stage == "drafting":
+        snapshot = pal.wait_draft(thread_id, max_seconds=max_seconds)
+        if snapshot.stage not in contract.DRAFT_TERMINAL_STAGES:
+            return {**state, "done": False, "progress": str(snapshot)}
+        if snapshot.failed:
+            state["stage"] = "failed"
+            _save_state(dest, state)
+            raise PaletteError(f"draft failed: {snapshot.message}")
+
+        plan = pal.draft_result(thread_id)
+        if len(plan.strip()) < MIN_PLAN_CHARS:
+            # Terminal, not failed, and empty. Building this produces nothing.
+            state["stage"] = "failed"
+            _save_state(dest, state)
+            raise PaletteError(
+                f"draft returned {len(plan.strip())} characters, which is not a usable plan. "
+                f"Delete {dest / DECK_STATE} and try again with a more specific request."
+            )
+        plan_path = dest / "plan.md"
+        dest.mkdir(parents=True, exist_ok=True)
+        plan_path.write_text(plan, encoding="utf-8")
+        state["plan"] = str(plan_path)
+
+        if state.get("pause_after_plan") and not approve:
+            state["stage"] = "plan-ready"
+            _save_state(dest, state)
+            return {
+                **state,
+                "done": False,
+                "plan_markdown": plan,
+                "note": "show this plan to the user; call again with --approve to build it",
+            }
+
+        # Same session carries the plan and the deck.
+        pal.start_build(plan, thread_id=thread_id)
+        state["stage"] = "building"
+        _save_state(dest, state)
+        return {**state, "done": False, "note": "plan ready, build started"}
+
+    if stage == "plan-ready":
+        plan = Path(state["plan"]).read_text(encoding="utf-8")
+        if not approve:
+            return {
+                **state,
+                "done": False,
+                "plan_markdown": plan,
+                "note": "waiting for the user; call again with --approve to build it",
+            }
+        # Edits the user asked for are made to plan.md, so re-read it above
+        # rather than replaying whatever the draft originally returned.
+        pal.start_build(plan, thread_id=thread_id)
+        state["stage"] = "building"
+        _save_state(dest, state)
+        return {**state, "done": False, "note": "approved, build started"}
+
+    if stage == "building":
+        snapshot = pal.wait(thread_id, max_seconds=max_seconds)
+        if not snapshot.terminal:
+            return {**state, "done": False, "progress": str(snapshot)}
+        if snapshot.failed:
+            state["stage"] = "failed"
+            _save_state(dest, state)
+            raise PaletteError(f"build failed: {snapshot.message}")
+
+        outcome = pal.result(thread_id)
+        pal.download(thread_id, dest / "deck.pptx")
+        pal.previews(thread_id, dest)
+        checked = _verify(dest)
+        if not checked["verified"]:
+            raise PaletteError(
+                f"build reported done but the files are not on disk: {checked}. "
+                "Do not report success."
+            )
+        state.update(stage="done", title=outcome.title, slide_count=outcome.slide_count)
+        _save_state(dest, state)
+        return {**state, "done": True, "unrepaired": list(outcome.unrepaired), **checked}
+
+    raise PaletteError(f"deck is in state {stage!r}; delete {dest / DECK_STATE} to start over")

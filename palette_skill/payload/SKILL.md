@@ -133,115 +133,98 @@ Pass `--base-url` only when the user names a specific server in conversation.
 If the client cannot reach whatever it resolved, the error names the URL it
 tried — report *that*, rather than asking which URL to use.
 
-## Builds are slow — never block on one
+## Making a deck
 
-A 10–15 slide deck takes **two to four minutes** — far longer than a single
-step is usually allowed to run. So start the build, then poll it across several
-short steps, one command at a time:
-
-```bash
-# Step 1 — start it. Returns immediately with a thread id.
-palette-skill start-build --plan-file ./plan.md
-```
+**One command, called repeatedly until it says it is done.** It owns the
+session, the plan, the polling and the download, so you cannot lose the thread
+by retrying — and it reports completion by stat-ing the files, not by believing
+anything.
 
 ```bash
-# Step 2 — repeat until "terminal": true. Each call is bounded, so it
-# always returns promptly whether or not the build has finished.
-palette-skill wait --thread-id <TID> --max-seconds 25
+palette-skill deck --request "Q3 sales review deck" --dest ./deck
 ```
+
+Then call it again — same `--dest`, nothing else — until `"done": true`:
 
 ```bash
-# Step 3 — once terminal and not failed.
-palette-skill result --thread-id <TID>
+palette-skill deck --dest ./deck
 ```
 
-Report each `wait` snapshot to the user as it arrives — a silent three-minute
-gap reads as a hang. A typical build needs six to ten `wait` calls; that is
-normal, not a stall. Keep going until `terminal` is true.
+Each call returns where it got to:
 
-Never wrap the whole build in one long call. `palette-skill build` blocks for
-the entire two-to-four minutes and will be killed mid-flight, leaving the deck
-rendering server-side while you see only an error. Use it only if the host has
-no step limit.
+```json
+{"stage": "building", "done": false, "progress": "build [2/9] — coding slides"}
+```
 
-If `start-build` reports no `/build_async` route, that deployment predates
-background builds. Say so and stop; either the step limit must be raised past
-600s or the server needs redeploying. Do not silently retry.
+Report that `progress` line to the user each time. A deck takes **two to four
+minutes**, so expect roughly **fifteen to twenty calls**. That is normal, not a
+stall. Keep going until `done` is true.
 
-## Workflow
+**While a deck is building, never end your turn to ask whether to keep
+polling.** Offering to continue — "let me know if you'd like me to keep
+checking" — ends the run on many hosts, and it ends it with the deck
+unfinished and undownloaded, which is the worst of both outcomes: the build
+completed on the server and nobody collected it. The user asked for a deck;
+polling is how you make one, not a favour to check first. The only things
+that may end a deck task are `"done": true` or a raised error.
 
-**1. Draft a plan.** Never skip straight to a build from a one-line request —
-the plan is the artefact the user edits, and it is far cheaper to fix than a
-rendered deck.
+The final call returns the proof:
 
-Drafting takes **60–90 seconds**, so it has the same start/poll/collect shape as
-a build. One command per block:
+```json
+{"stage": "done", "done": true, "verified": true,
+ "pptx": "deck/deck.pptx", "pptx_bytes": 489236, "slide_count": 9}
+```
+
+**`verified` is computed from the filesystem** — the file exists, is over 20 KB,
+and previews are present. If you did not see `"verified": true`, there is no
+deck, whatever else you believe.
+
+Already have a plan? Pass it instead of a request and drafting is skipped:
 
 ```bash
-# Step 1 — start it. Returns immediately with a thread id.
-palette-skill start-draft \
-  --request "Deck explaining vector databases to backend engineers"
+palette-skill deck --plan-file ./plan.md --dest ./deck
 ```
+
+### Showing the plan before building
+
+Asked to *draft a plan, show it, then build it* — add `--pause-after-plan`.
+Still the same command, still called repeatedly:
 
 ```bash
-# Step 2 — repeat until "terminal": true.
-palette-skill wait-draft --thread-id <TID> --max-seconds 25
+palette-skill deck --request "Q3 sales review deck" --dest ./deck --pause-after-plan
+palette-skill deck --dest ./deck        # repeat until stage is plan-ready
 ```
+
+It stops at `"stage": "plan-ready"` and hands you the plan:
+
+```json
+{"stage": "plan-ready", "done": false, "plan": "deck/plan.md",
+ "plan_markdown": "# Q3 Sales Review\n...",
+ "note": "show this plan to the user; call again with --approve to build it"}
+```
+
+Show them `plan_markdown`. If they want changes, edit `<dest>/plan.md` — the
+build reads the file as it then stands, not the original draft. When they
+approve:
 
 ```bash
-# Step 3 — collect the plan into a file, not into your context.
-palette-skill draft-result --thread-id <TID> --dest ./plan.md
+palette-skill deck --dest ./deck --approve
 ```
 
-Read `./plan.md` back and show it to the user.
+Then keep calling `deck --dest ./deck` until `"done": true` as usual.
 
-Reference documents (PDF, DOCX, PPTX, Markdown) shape the plan — pass paths that
-already exist in the workspace, repeating `--file` per document:
+### The granular commands
 
-```bash
-palette-skill start-draft --request "Turn this into a 12-slide readout" \
-  --file ./uploads/q3.pdf --file ./uploads/notes.md
-```
+`start-build` / `wait` / `result` / `download` / `previews` still exist and are
+documented below. Use them for anything `deck` does not cover — retrying a
+slide, editing one, inspecting a session.
 
-Reuse the **same thread id** for the build that follows — one session carries the
-plan and the deck together.
-
-`palette-skill draft` is the blocking equivalent. It will be killed by a step
-limit; use it only where there is none. If `start-draft` reports no
-`/draft_async` route, that deployment predates background drafting — say so, and
-offer an example plan instead.
-
-**2. Show the plan and get agreement.** Show it as markdown and ask whether to
-build or adjust. Apply their changes to `./plan.md` — it is just a text file, so revising it
-needs no server round-trip.
-
-**3. Build it** with the start / wait / result loop above, reading the plan from
-`./plan.md`.
-
-**4. Show the result.** Save the previews and the deck into the workspace so the
-user can open them:
-
-```bash
-palette-skill previews --thread-id <TID> --dest-dir ./deck
-palette-skill download --thread-id <TID> --dest ./deck/deck.pptx
-```
-
-Then actually look at a few preview PNGs before declaring success — the geometry
-pass fixes measurable defects, not bad content.
-
-**5. Iterate.** Two different tools, and picking the wrong one wastes a minute:
-
-| The user says | Use | Why |
-|---|---|---|
-| "slide 5 is ugly / it came out wrong" | `retry --thread-id <TID> --slide 5` | Re-rolls that slide at a small temperature bump. No new instruction. |
-| "make slide 5 a table", "swap bullets 2 and 3" | `edit --thread-id <TID> --slide 5 --instruction "..."` | Applies a specific instruction to that slide. |
-| "restructure the deck", "add a section" | edit `./plan.md`, then build again | Whole-deck changes belong in the plan. |
-
-Both `retry` and `edit` re-render server-side and can take a couple of minutes,
-so they may hit a step limit — if one does, poll `deck --thread-id <TID>` until
-`building` is false rather than reissuing the command. Download again afterwards
-to pick up the change, and reuse the same thread id throughout: it is the
-session key for the whole deck.
+**Never assemble `start-draft` + `wait-draft` + `draft-result` + `start-build`
+into a deck by hand.** Every failure this skill has had in the wild came from
+exactly that: the sequence is long enough that a retry starts a second draft,
+the first session is orphaned, and what gets reported is a deck nobody built.
+`deck` exists so that you cannot do this. Whatever the request phrasing,
+`deck` covers it — with `--pause-after-plan` if approval is wanted.
 
 ## Starting from an example plan
 
@@ -293,7 +276,7 @@ raw HTTP shapes. The short version:
 | `POST /build_async` *(feature-detected)* | `start-build --plan-file X` | `pal.start_build(plan)` | ~5s | Same build, started in the background. Returns immediately; poll /progress then read /result. |
 | `GET /result/{thread_id}` *(feature-detected)* | `result` | `pal.result(tid)` | ~30s | Terminal outcome of a background build: the same payload /build returns, or the error that ended it. |
 | `GET /progress/{thread_id}` | `progress / wait` | `pal.progress(tid) / pal.wait(tid)` | ~30s | Current build stage for a session. Safe to poll while a build runs. |
-| `GET /deck/{thread_id}` | `deck` | `pal.deck(tid)` | ~30s | Slide count, deck title, and whether a build is in flight. |
+| `GET /deck/{thread_id}` | `deck-status` | `pal.deck(tid)` | ~30s | Slide count, deck title, and whether a build is in flight. |
 | `POST /edit` | `edit --slide N --instruction X` | `pal.edit(tid, n, instruction)` | ~180s | Stage 3 — apply a natural-language instruction to one slide and re-render. |
 | `POST /retry/{thread_id}/{slide_n}` | `retry --slide N` | `pal.retry(tid, n)` | ~180s | Re-roll one slide at a small temperature bump, then re-run the geometry pass on it. |
 | `GET /preview/{thread_id}/{idx}` | `previews --dest-dir X` | `pal.preview(tid, n, dest)` | ~30s | PNG render of one slide (1-indexed). |
@@ -322,32 +305,40 @@ Never respond to any of these by hand-building slides instead.
 
 ## Never claim a deck that does not exist
 
-The failure this skill guards against hardest: reporting a finished deck when
-nothing was built. It has happened — an agent started a draft, answered
-*"The deck has been built and saved to ./deck.pptx"* eighteen seconds later,
-and never called `start-build` at all. The user went looking for a file that
-was never written.
+This is the failure this skill guards against hardest, because it has happened
+more than once. An agent drafted a plan, answered *"The deck has been built and
+saved to ./deck.pptx"*, and never started a build at all. The user went looking
+for files that were never written.
 
-So, before you say anything about a finished deck, **run this and read the
-output**:
+**The rule: the only thing that may end a deck task is `"verified": true` from
+`palette-skill deck`.** Not your recollection, not a build that reported
+`stage: done`, not a plan that came out well.
+
+If you have not seen that flag, say what actually happened — which stage you
+reached and what the last `progress` line said — and do not describe files you
+have not seen listed.
+
+That is what to say when the task is genuinely over: an error was raised, or
+you are out of steps. It is **not** a way to end a turn early. A build still in
+progress is not a result to report; it is a reason to call `deck` again.
+
+Three consequences worth stating plainly:
+
+- **A plan is not a deck.** Finishing Stage 1 gives you `plan.md` and nothing
+  else. The build has not started.
+- **Starting a build is not finishing one.** `start-build` returns in
+  milliseconds and tells you nothing about the outcome.
+- **A step that was cut short tells you nothing.** Timed out or truncated means
+  you do not know the state. Call `deck` again.
+
+Driving it by hand instead of through `deck`? Then check for yourself before
+saying anything:
 
 ```bash
 ls -l ./deck/deck.pptx ./deck/slide-*.png
 ```
 
-If that errors, or the `.pptx` is under 20 KB, **there is no deck**. Say what
-actually happened — which stage you reached, and what the last `wait` reported —
-and do not describe files you have not seen listed.
-
-Three rules that follow from it:
-
-- **A plan is not a deck.** Finishing Stage 1 means you have `./plan.md` and
-  nothing else. The build has not started.
-- **Starting a build is not finishing one.** `start-build` returns in
-  milliseconds and tells you nothing about the outcome. Only `result` does, and
-  only after `wait` reports `"terminal": true`.
-- **Never infer an outcome from a step that was cut short.** A timed-out or
-  truncated step means you do not know the state — poll again.
+An error, or a `.pptx` under 20 KB, means there is no deck.
 
 ## Before you call it done
 

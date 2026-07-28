@@ -294,7 +294,7 @@ _CALLS: dict[str, tuple[str, str]] = {
     "build_async": ("start-build --plan-file X", "pal.start_build(plan)"),
     "result": ("result", "pal.result(tid)"),
     "progress": ("progress / wait", "pal.progress(tid) / pal.wait(tid)"),
-    "deck": ("deck", "pal.deck(tid)"),
+    "deck": ("deck-status", "pal.deck(tid)"),
     "edit": ("edit --slide N --instruction X", "pal.edit(tid, n, instruction)"),
     "retry": ("retry --slide N", "pal.retry(tid, n)"),
     "preview": ("previews --dest-dir X", "pal.preview(tid, n, dest)"),

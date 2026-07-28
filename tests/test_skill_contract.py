@@ -217,8 +217,13 @@ class TestGeneratedContent:
         """
         text = SKILL_MD.read_text(encoding="utf-8")
         assert "Never claim a deck that does not exist" in text
-        assert "ls -l ./deck/deck.pptx" in text, "the gate needs a command, not just a warning"
         assert "A plan is not a deck" in text
+        # Prose alone failed twice. The gate now points at a machine-checked
+        # flag, so the claim of completion is not the model's to make.
+        assert '"verified": true' in text, (
+            "the gate must anchor on the filesystem-verified flag, not on an instruction to look"
+        )
+        assert "ls -l ./deck/deck.pptx" in text, "keep the manual check for the granular path"
 
     def test_skill_distinguishes_remote_from_local_when_unreachable(self) -> None:
         """`serve ensure` is wrong advice for a deployed Palette — it starts a

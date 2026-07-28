@@ -111,6 +111,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--thread-id", required=True)
     p.add_argument("--dest", default=None, help="Write the plan markdown here")
 
+    p = sub.add_parser(
+        "deck",
+        help="Make a deck, resumably. Call repeatedly with the same --dest until done.",
+    )
+    p.add_argument("--request", help="What the deck is about (drafts a plan first)")
+    p.add_argument("--plan-file", help="Existing plan markdown; skips drafting")
+    p.add_argument("--dest", default="./deck", help="Where the deck and previews land")
+    p.add_argument("--max-seconds", type=float, default=25.0)
+    p.add_argument(
+        "--pause-after-plan",
+        action="store_true",
+        help="Stop once the plan is drafted so the user can approve it before the build",
+    )
+    p.add_argument(
+        "--approve",
+        action="store_true",
+        help="Approve the paused plan (as it now stands in <dest>/plan.md) and build it",
+    )
+
     p = sub.add_parser("build", help="Build a deck and block until it is rendered")
     p.add_argument("--plan")
     p.add_argument("--plan-file")
@@ -135,7 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("result", help="Terminal outcome of a background build")
     p.add_argument("--thread-id", required=True)
 
-    p = sub.add_parser("deck", help="Slide count, title, and build state")
+    p = sub.add_parser("deck-status", help="Slide count, title, and build state")
     p.add_argument("--thread-id", required=True)
 
     p = sub.add_parser("edit", help="Apply an instruction to one slide")
@@ -258,6 +277,19 @@ def _dispatch(args: argparse.Namespace, pal: PaletteClient) -> Any:
             out["plan"] = plan
         return out
 
+    if command == "deck":
+        from palette_skill.client import run_deck
+
+        return run_deck(
+            pal,
+            dest=args.dest,
+            request=args.request,
+            plan_file=args.plan_file,
+            max_seconds=args.max_seconds,
+            pause_after_plan=args.pause_after_plan,
+            approve=args.approve,
+        )
+
     if command == "build":
         outcome = pal.build_and_wait(
             _plan_text(args),
@@ -294,7 +326,7 @@ def _dispatch(args: argparse.Namespace, pal: PaletteClient) -> Any:
     if command == "result":
         outcome = pal.result(args.thread_id)
         return {"thread_id": outcome.thread_id, **outcome.raw}
-    if command == "deck":
+    if command == "deck-status":
         return pal.deck(args.thread_id)
 
     if command == "edit":

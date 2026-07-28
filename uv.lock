@@ -583,7 +583,6 @@ name = "palette-skill"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
-    { name = "pytest" },
 ]
 
 [package.optional-dependencies]
@@ -620,7 +619,6 @@ requires-dist = [
     { name = "pdfplumber", marker = "extra == 'server'" },
     { name = "pydantic", marker = "extra == 'server'" },
     { name = "pymupdf", marker = "extra == 'server'" },
-    { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "python-docx", marker = "extra == 'server'" },
     { name = "python-multipart", marker = "extra == 'server'" },

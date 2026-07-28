@@ -96,6 +96,25 @@ def test_no_reversed_guidance(doc: Path) -> None:
         assert banned not in text, f"{doc.name} still teaches: {banned!r} ({why})"
 
 
+def test_skill_forbids_the_two_ways_a_deck_goes_missing() -> None:
+    """Both were observed in live runs, and both read as reasonable behaviour.
+
+    An agent that hand-drives ``start-draft``/``wait-draft`` loses the session
+    on retry and reports a deck nobody built. An agent that stops mid-build to
+    ask whether to keep polling ends the run on hosts that treat plain prose as
+    a final answer — leaving a deck finished on the server and never collected.
+    Neither is a lie, which is why only an explicit prohibition catches them.
+    """
+    skill = (PACKAGE / "payload" / "SKILL.md").read_text(encoding="utf-8")
+    assert "Never assemble" in skill, "nothing stops the agent hand-driving the primitives"
+    assert "never end your turn to ask whether to keep" in skill, (
+        "nothing stops the agent handing the polling back to the user mid-build"
+    )
+    assert "--pause-after-plan" in skill, (
+        "'show me the plan first' must route through deck, not the raw primitives"
+    )
+
+
 def test_guide_and_testing_agree_on_the_install_extra() -> None:
     """Both walkthroughs must name the same extra, or one of them wastes an hour."""
     for doc in (PACKAGE / "GUIDE.md", PACKAGE / "TESTING.md"):

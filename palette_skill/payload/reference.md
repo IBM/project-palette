@@ -189,7 +189,7 @@ app. If a row here is wrong, the test suite is broken, not just the docs.
 | `POST /build_async` *(feature-detected)* | `start-build --plan-file X` | `pal.start_build(plan)` | ~5s | Same build, started in the background. Returns immediately; poll /progress then read /result. |
 | `GET /result/{thread_id}` *(feature-detected)* | `result` | `pal.result(tid)` | ~30s | Terminal outcome of a background build: the same payload /build returns, or the error that ended it. |
 | `GET /progress/{thread_id}` | `progress / wait` | `pal.progress(tid) / pal.wait(tid)` | ~30s | Current build stage for a session. Safe to poll while a build runs. |
-| `GET /deck/{thread_id}` | `deck` | `pal.deck(tid)` | ~30s | Slide count, deck title, and whether a build is in flight. |
+| `GET /deck/{thread_id}` | `deck-status` | `pal.deck(tid)` | ~30s | Slide count, deck title, and whether a build is in flight. |
 | `POST /edit` | `edit --slide N --instruction X` | `pal.edit(tid, n, instruction)` | ~180s | Stage 3 — apply a natural-language instruction to one slide and re-render. |
 | `POST /retry/{thread_id}/{slide_n}` | `retry --slide N` | `pal.retry(tid, n)` | ~180s | Re-roll one slide at a small temperature bump, then re-run the geometry pass on it. |
 | `GET /preview/{thread_id}/{idx}` | `previews --dest-dir X` | `pal.preview(tid, n, dest)` | ~30s | PNG render of one slide (1-indexed). |
