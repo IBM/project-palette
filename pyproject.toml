@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# Packages ONLY the agent-skill client (`palette_skill`), never the server
+# modules. That is deliberate: app.py / config.py / pipeline.py / render.py /
+# session.py are top-level modules, and shipping them on an agent's sys.path
+# would collide with the host's own `config`, `session`, … and drag in
+# LibreOffice/Poppler/Node-bound dependencies the client does not need.
+#
+# The server keeps running exactly as before, from the repo root or the
+# Dockerfile — `pip install -r requirements.txt && python app.py` is unchanged.
+[project]
+name = "palette-skill"
+dynamic = ["version"]
+description = "Client for the Palette deck-building service, packaged as an agent skill"
+readme = "palette_skill/README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+# httpx and nothing else. This wheel is installed into agent sandboxes, so
+# every dependency added here is paid by every agent on every session. Test
+# and server dependencies belong in the extras below; `test_client_runtime_is_httpx_only`
+# fails the build if anything else creeps in.
+dependencies = [
+    "httpx>=0.27",
+]
+
+[project.scripts]
+# The agent-facing client and service supervisor. Always installed; both are
+# pure-Python and pull in nothing beyond httpx.
+palette-skill = "palette_skill.cli:main"
+# Runs the Palette server in the foreground from a checkout. Needs the
+# `server` extra installed and PALETTE_HOME (or a discoverable checkout);
+# fails with an actionable message otherwise.
+palette-serve = "palette_skill.server_entry:main"
+
+[project.optional-dependencies]
+# The server's own dependencies — the single source of truth, mirrored by
+# requirements.txt for the Dockerfile's cache-friendly two-step install.
+#   pip install -e '.[server]'
+server = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "pydantic",
+    "pdfplumber",
+    "python-multipart",
+    "python-docx",
+    "python-pptx",
+    "pymupdf",
+]
+# Everything needed to run the contract tests against the live app.
+dev = [
+    "palette-skill[server]",
+    "pytest>=8",
+]
+
+[tool.setuptools]
+packages = ["palette_skill"]
+
+[tool.setuptools.dynamic]
+version = { attr = "palette_skill.__version__" }
+
+[tool.setuptools.package-data]
+palette_skill = ["payload/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "contract: asserts the skill still matches the live Palette app",
+    "slow: builds real artifacts (compiles a wheel)",
+]

@@ -11,6 +11,10 @@ __pycache__/
 .coverage
 htmlcov/
 
+# ---------- Packaging (palette_skill wheel builds) ----------
+build/
+dist/
+
 # ---------- Virtual envs ----------
 .venv/
 venv/

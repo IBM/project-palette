@@ -142,6 +142,146 @@ The Dockerfile installs everything Palette needs — Python, Node, LibreOffice, 
 
 ---
 
+## Running Palette as a local service
+
+`python app.py` is fine for a dev loop, but an agent wants Palette *there*, not
+started by hand each time. `palette-skill serve` supervises it:
+
+```bash
+make serve-init      # write ~/.config/palette/env, then put your RITS_API_KEY in it
+make serve-doctor    # what's missing, per mode — run this first
+make serve-start     # start and wait until /health answers
+make serve-status    # up? which mode? which workspace?
+make serve-logs      # tail
+make serve-stop
+```
+
+Three backends, and `serve start` picks one unless you pass `--mode`:
+
+| Mode | How it runs | When to use it |
+|---|---|---|
+| `process` | Detached `python app.py`, pid + log under `~/.local/state/palette` | Default on a machine with the toolchain installed |
+| `container` | `docker`/`podman run -d --restart unless-stopped` | No Node/LibreOffice/Poppler needed; identical to Code Engine |
+| `launchd` | A LaunchAgent — `make serve-install` | You want it up after every login, restarted on crash |
+
+`serve start` prefers `container` when an image exists and falls back to
+`process`. Container mode sets its own restart policy, so launchd is only for
+process mode.
+
+**`serve doctor` before anything else.** It checks the checkout, the RITS key,
+Node, `pptxgenjs`, LibreOffice, Poppler, the container runtime, and the image,
+then tells you which modes are ready and what is blocking the rest — rather
+than letting a deck fail three minutes into a build.
+
+### Configuration
+
+One file, `~/.config/palette/env`, mode 600, read by every mode:
+
+```bash
+RITS_API_KEY=...                                  # required for any build
+PALETTE_HOME=/path/to/project-palette             # process + launchd modes
+PALETTE_PORT=18814
+PALETTE_WORKSPACE=~/.local/state/palette/workspace
+```
+
+The key is deliberately **not** written into the launchd plist — the agent just
+points at this file, so the secret has one location and one set of permissions.
+
+`PALETTE_WORKSPACE` matters: by default Palette writes session decks into
+`./workspace` inside its own checkout, which is wrong for a long-lived service
+and unwritable for a sandboxed caller. The supervisor points it at the state
+directory instead.
+
+### Installing the server
+
+```bash
+pip install -e '.[server]'      # same deps as requirements.txt, one list
+palette-serve --port 18814      # foreground; this is what launchd supervises
+
+# working on the skill rather than just running the server? use [dev] instead —
+# it adds pytest on top of [server]:
+pip install -e '.[dev]'
+```
+
+`requirements.txt` stays for the Dockerfile's cache-friendly two-step build; a
+test asserts the two lists never diverge.
+
+---
+
+## Using Palette from an agent
+
+Palette ships as an **agent skill**: a `SKILL.md` plus a dependency-light HTTP
+client. An agent installs the client, calls the same API the web UI calls, and
+gets back a `.pptx` — no LibreOffice, Node, or fonts on the agent's side.
+
+```bash
+make skill                                  # verify the skill matches this repo
+make skill-install CUGA=~/code/cuga-agent   # install into an agent's skills root
+make skill-status  CUGA=~/code/cuga-agent   # is that copy still current?
+make release                                # shippable artifacts in dist/
+```
+
+`make release` produces a wheel plus a self-contained tarball per agent host.
+A consumer untars it into their skills root — no Palette checkout, no network,
+no build step. Add `BASE_URL=https://…` to pin a deployment into the artifact.
+
+Then point the agent at a server:
+
+```bash
+export PALETTE_URL=https://<your-palette-host>
+```
+
+### With CUGA
+
+CUGA ships a preset that starts a supervisor agent with this skill loaded — a
+*Deck Builder* rather than a generic skills demo:
+
+```bash
+make skill-install CUGA=../cuga-agent-july25     # install the skill
+palette-skill serve ensure                        # make sure a server is up
+cd ../cuga-agent-july25 && PALETTE_URL=http://127.0.0.1:18814 cuga start demo_palette
+```
+
+The agent detects the server on startup and, if it is down, hands the user a
+`palette-skill serve` command rather than trying to start one itself.
+
+### Why it can't silently drift
+
+The skill is **generated from this repo and verified against it**, never
+hand-written on the agent side:
+
+| Moving part | What keeps it honest |
+|---|---|
+| Routes | `tests/test_skill_contract.py` walks `app.py`'s decorators. A new or renamed route fails the suite. |
+| Request fields | `BuildReq` / `EditReq` / `draft(...)` are compared field-by-field against `palette_skill/contract.py`. |
+| Model menus | The model table in `SKILL.md` is rendered from `config.py`. Add a model, `make skill-check` goes red. |
+| Example plans | Rendered from `config.USER_FACING_EXAMPLES`, intersected with what is on disk. |
+| Installed copy | `.palette-skill.json` records commit, version, and per-file hashes. `make skill-status` names what moved. |
+
+So the loop is: change Palette → `make skill` tells you if the skill is stale →
+`make skill-install` ships it. Nothing is reconstructed by hand.
+
+The skill folder is **copied**, not symlinked, on purpose: `Path.rglob` stopped
+following directory symlinks in Python 3.13, so a symlinked skill would be
+discovered on 3.12 and silently vanish on an interpreter upgrade.
+
+### Background builds
+
+A deck takes two to four minutes; agent sandboxes routinely kill a step after
+30 seconds. `POST /build_async` starts a build and returns immediately, so the
+caller polls `/progress` and reads `/result` across several short steps. The
+blocking `POST /build` is unchanged, and `PaletteClient` feature-detects which
+one a deployment has via `/openapi.json` — so the skill works against an older
+deployment too, just without progress reporting.
+
+See [`palette_skill/GUIDE.md`](palette_skill/GUIDE.md) for what the skill is and
+how to build it, [`palette_skill/README.md`](palette_skill/README.md) for the client,
+[`palette_skill/payload/SKILL.md`](palette_skill/payload/SKILL.md) for what the
+agent is actually told, and [`palette_skill/TESTING.md`](palette_skill/TESTING.md)
+for how to verify the whole chain end to end.
+
+---
+
 ## How it's wired
 
 ```
@@ -165,6 +305,9 @@ reference_plans/   Example plans (also serve as crafter exemplars)
 assets/            Logo, favicons, IBM brand assets used by the renderer
 icons/carbon/      Carbon icon library
 workspace/         Per-session decks (gitignored, ephemeral)
+
+palette_skill/     Agent skill — HTTP client, generated SKILL.md, installer
+tests/             Contract tests binding the skill to app.py + config.py
 ```
 
 ---

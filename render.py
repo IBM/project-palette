@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import shutil
 import contextvars
 import subprocess
@@ -380,9 +381,39 @@ def _collect_slide_js(out_dir: Path) -> list[str | None]:
     return [by_num.get(i) for i in range(1, n_max + 1)]
 
 
+def _node_env(module_dir: Path) -> dict[str, str]:
+    """Environment for `node`, with NODE_PATH pointed at the checkout.
+
+    Setting `cwd` is not enough: CommonJS `require()` resolves by walking up
+    from the *requiring script's own directory*, not the working directory.
+    The runner is written into the per-session workspace, so once that
+    workspace moved outside the checkout (PALETTE_WORKSPACE), walking up from
+    it never reaches our node_modules and every render died with
+    "Cannot find module 'pptxgenjs'". NODE_PATH is the documented fallback in
+    that resolution algorithm, and it survives the workspace being anywhere.
+    """
+    env = dict(os.environ)
+    env["NODE_PATH"] = str(module_dir / "node_modules")
+    return env
+
+
 def _node_module_dir(start: Path) -> Path:
-    """Walk up from `start` until we find a node_modules/ dir, or return
-    `start` so node's resolution still gets a chance via NODE_PATH."""
+    """Directory to run node from: it must hold node_modules/ *and* the repo
+    assets the slide JS references by relative path (icons/carbon/, assets/).
+
+    The repo root is checked first because both of those only ever live there.
+    Walking up from the session dir is the fallback, and it is only correct
+    when the workspace happens to sit inside the checkout — which stopped
+    being true once PALETTE_WORKSPACE let the workspace move to a state dir
+    (a service should not write into its own source tree). Without the repo
+    check, a build there fails with "pptxgenjs not installed", or silently
+    picks up an unrelated node_modules higher up the user's home directory.
+    """
+    import config
+
+    if (config.ROOT / "node_modules").exists():
+        return config.ROOT
+
     p = start.resolve()
     for parent in [p, *p.parents]:
         if (parent / "node_modules").exists():
@@ -423,7 +454,7 @@ def _isolate_write_failure(slide_js: list[str | None], deck_title: str,
             runner_path.write_text(runner_js)
             try:
                 subprocess.run(
-                    [node, str(runner_path)], cwd=str(cwd),
+                    [node, str(runner_path)], cwd=str(cwd), env=_node_env(cwd),
                     capture_output=True, text=True, timeout=60,
                 )
             except subprocess.TimeoutExpired:
@@ -480,6 +511,7 @@ def render(eval_dir: Path, deck_path: Path | None, out_name: str = "deck.pptx") 
     proc = subprocess.run(
         [node, str(runner_path)],
         cwd=str(cwd),
+        env=_node_env(cwd),
         capture_output=True, text=True, timeout=180,
     )
 
@@ -517,7 +549,7 @@ def render(eval_dir: Path, deck_path: Path | None, out_name: str = "deck.pptx") 
                                        manifest_path=manifest)
             runner_path.write_text(runner_js2)
             proc2 = subprocess.run(
-                [node, str(runner_path)], cwd=str(cwd),
+                [node, str(runner_path)], cwd=str(cwd), env=_node_env(cwd),
                 capture_output=True, text=True, timeout=180,
             )
             failures = []

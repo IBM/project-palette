@@ -17,7 +17,13 @@ ROOT = Path(__file__).resolve().parent
 ICONS_DIR = ROOT / "icons" / "carbon"
 ASSETS_DIR = ROOT / "assets"
 REFERENCE_PLANS = ROOT / "reference_plans"
-WORKSPACE = ROOT / "workspace"
+
+# Per-session decks. Defaults to ./workspace for local dev, where keeping
+# artifacts next to the source is convenient. Override with PALETTE_WORKSPACE
+# when running Palette as a long-lived service: a service should not write
+# state into its own source tree, and a sandboxed caller may not be permitted
+# to write there at all.
+WORKSPACE = Path(os.environ.get("PALETTE_WORKSPACE") or (ROOT / "workspace")).expanduser()
 
 # Curated user-facing example plans for the "Start from an example plan"
 # button. Tuple = (filename in REFERENCE_PLANS, display label in the UI).

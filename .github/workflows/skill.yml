@@ -1,0 +1,40 @@
+# The skill is generated from app.py and config.py. This is the backstop that
+# catches a change to either which nobody regenerated for — the local pre-commit
+# hook (`make hooks`) is opt-in, so CI is what makes the guarantee hold for
+# everyone.
+name: skill
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "app.py"
+      - "config.py"
+      - "session.py"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - "palette_skill/**"
+      - "tests/**"
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The server extra pulls in fastapi/pdfplumber so the live tier — which
+      # imports the real app and walks its routes — actually runs here rather
+      # than skipping. Skipping would make this job green while blind.
+      - name: Install
+        run: pip install -e '.[dev]'
+
+      - name: SKILL.md is current with contract.py and config.py
+        run: python -m palette_skill.build_skill --check
+
+      - name: The skill still describes this server
+        run: python -m pytest tests/ -q
