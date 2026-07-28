@@ -42,6 +42,13 @@ class Host:
     #: meaningfully cap a step.
     step_limit: str | None
 
+    #: What to pass as ``deck --max-seconds``. Each call must fit inside one
+    #: step, so this is the step budget less a margin for process start-up.
+    #: It decides how many calls a deck costs, and that is what actually runs
+    #: out: a slow build takes eight minutes, which is twenty steps at 25s and
+    #: five at 100s. Agents abandon the twenty long before the step limit.
+    poll_seconds: int
+
     #: Whether the agent may `import palette_skill` directly in its own code.
     #: False where code runs under a restricted import allowlist.
     inline_python: bool
@@ -57,6 +64,13 @@ class Host:
     #: One line on why the install root is what it is.
     install_note: str
 
+    #: Where a finished deck shows up in this host's own UI, phrased for the
+    #: user. ``None`` when the host has no such surface and an absolute path
+    #: is the whole answer. Written into the deck's completion instructions,
+    #: because a path is the *developer's* answer to "where is my deck" and
+    #: often not the one the person asking can act on.
+    workspace_hint: str | None
+
 
 CUGA = Host(
     key="cuga",
@@ -67,7 +81,10 @@ CUGA = Host(
     edit="edit_file",
     skill_dir="`./skills/palette`",
     skill_path="./skills/palette",
-    step_limit="about 30 seconds",
+    step_limit="about 120 seconds",
+    # `cuga demo start demo_palette` raises sandbox_execution_timeout to 120s
+    # precisely so a deck costs ~5 polls instead of ~20. Keep the two in step.
+    poll_seconds=100,
     # cuga_lite executes code blocks in-process under an allowlist that has no
     # httpx, so an import of the client fails there — the shell is the only way
     # to reach it.
@@ -77,6 +94,9 @@ CUGA = Host(
     # symlinked skill is discovered on 3.12 and silently vanishes on upgrade.
     follows_symlinks=False,
     install_note="CUGA scans one skills root; `[skills] root` in settings.toml selects it.",
+    # /api/workspace/tree + /api/workspace/download already serve this thread's
+    # files; the deck is browsable and downloadable there the moment it lands.
+    workspace_hint="the **Files** panel for this conversation in the CUGA UI",
 )
 
 CLAUDE_CODE = Host(
@@ -91,10 +111,14 @@ CLAUDE_CODE = Host(
     # Bash defaults to a 2 minute timeout and accepts up to 10, so a bounded
     # poll is a convenience here rather than a necessity.
     step_limit=None,
+    # Bash allows up to 10 minutes, so one call can cover most of a build.
+    poll_seconds=240,
     inline_python=True,
     install_root="~/.claude/skills",
     follows_symlinks=True,
     install_note="Claude Code resolves symlinked skill directories, so the install can point at this repo.",
+    # Runs against the user's own filesystem — the path *is* the answer.
+    workspace_hint=None,
 )
 
 GENERIC = Host(
@@ -107,10 +131,13 @@ GENERIC = Host(
     skill_dir="this skill's directory",
     skill_path="./skills/palette",
     step_limit=None,
+    # Nothing is known about this host's step budget, so stay conservative.
+    poll_seconds=25,
     inline_python=True,
     install_root="skills",
     follows_symlinks=False,
     install_note="Point your host's skill loader at the installed directory.",
+    workspace_hint=None,
 )
 
 

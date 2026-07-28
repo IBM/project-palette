@@ -156,6 +156,20 @@ class TestBuiltArtifacts:
             assert expected in skill, f"{host_key} tarball is missing {expected!r}"
             assert forbidden not in skill, f"{host_key} tarball leaked {forbidden!r}"
 
+    def test_each_tarball_carries_its_own_poll_window(self, artifacts) -> None:
+        """A shared number here would silently break one host or the other.
+
+        100s fits CUGA's 120s step; Claude Code's Bash allows ten minutes and
+        can cover most of a build in one call. Ship CUGA's number to Claude
+        Code and every deck costs four times the calls it needs; ship Claude
+        Code's to CUGA and every single call is killed mid-poll.
+        """
+        for host_key, expected in (("cuga", "--max-seconds 100"), ("claude-code", "--max-seconds 240")):
+            tarball = next(a for a in artifacts if a.name.endswith(f"-{host_key}.tar.gz"))
+            with tarfile.open(tarball) as archive:
+                skill = archive.extractfile("palette/SKILL.md").read().decode()
+            assert expected in skill, f"{host_key} tarball does not poll at its own window"
+
     def test_manifest_marks_it_a_release(self, artifacts) -> None:
         tarball = next(a for a in artifacts if a.name.endswith("-cuga.tar.gz"))
         with tarfile.open(tarball) as archive:

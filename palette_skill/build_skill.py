@@ -368,10 +368,70 @@ def render_examples() -> str:
     return "\n".join(rows)
 
 
+def render_polling() -> str:
+    """How long one `deck` call may block, which decides how many calls a deck costs.
+
+    Left at the conservative default, a slow build is twenty-odd polls, and an
+    agent gives up well before the step limit does — observed at step 39 of
+    100, with the build still running and finishing, uncollected, minutes
+    later. Widening the poll to fill the host's step is the difference between
+    five calls and twenty.
+    """
+    h = _HOST
+    seconds = h.poll_seconds
+    lines = [
+        f"Each call blocks for up to `--max-seconds` — {seconds} here, chosen to fit "
+        f"{h.label}'s step budget:",
+        "",
+        "```bash",
+        f"palette-skill deck --dest ./deck --max-seconds {seconds}",
+        "```",
+        "",
+        f"A deck is **three to ten minutes** — the spread is how many geometry "
+        f"repair passes it needs, which is not known in advance — so expect roughly "
+        f"**{max(2, 180 // seconds)} to {max(4, 660 // seconds)} calls**. Ten minutes "
+        f"of building is normal, not a stall.",
+    ]
+    return "\n".join(lines)
+
+
+def render_delivery() -> str:
+    """How to hand the finished deck over, in terms this host's user can act on.
+
+    An absolute path answers "where is it" for someone at a shell. Someone in a
+    chat UI is not at a shell, and a path into a per-thread sandbox workspace
+    tells them almost nothing — that is exactly what happened: the path was
+    correct and still sent the user looking in the wrong place.
+    """
+    h = _HOST
+    lines = [
+        "When `verified` is true, tell the user, in this order:",
+        "",
+        "1. **How many slides**, and the deck title.",
+        "2. **`pptx_path`** — the absolute path. Never the relative `pptx`; "
+        "your `./` is a working directory they have never seen.",
+    ]
+    if h.workspace_hint:
+        lines += [
+            f"3. That they can open or download it from {h.workspace_hint} — no "
+            "terminal needed. The files appear there as soon as they are written, "
+            "and for someone working in a chat window this is usually the answer "
+            "they actually wanted.",
+        ]
+    lines += [
+        "",
+        "Then anything from `unrepaired` or `lint` that is non-empty, and say so "
+        "if the slide count does not match what the plan asked for.",
+    ]
+    return "\n".join(lines)
+
+
 #: Region id -> renderer. Adding a region means adding the fence to the
 #: markdown and an entry here; --check covers it automatically.
 RENDERERS: dict[str, Callable[[], str]] = {
     "execution": render_execution,
+    "polling": render_polling,
+    "delivery": render_delivery,
     "unreachable": render_unreachable,
     "defaults": render_defaults,
     "endpoints": render_endpoints,

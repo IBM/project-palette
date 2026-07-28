@@ -92,6 +92,12 @@ def test_no_reversed_guidance(doc: Path) -> None:
         ("--base-url <PALETTE_URL>", "placeholder URL — agents copy it literally"),
         ("pip install -e '.[server]'   # server + client dependencies",
          "[server] omits pytest; the dev-machine install is .[dev]"),
+        ("two to four minutes",
+         "measured builds run to fifteen-plus; under-promising makes a normal "
+         "build look like a stall and agents give up on it"),
+        ("--max-seconds 25",
+         "25s makes a long build cost twenty-odd polls, which agents abandon; "
+         "the window comes from the host profile's poll_seconds"),
     ):
         assert banned not in text, f"{doc.name} still teaches: {banned!r} ({why})"
 
@@ -107,12 +113,100 @@ def test_skill_forbids_the_two_ways_a_deck_goes_missing() -> None:
     """
     skill = (PACKAGE / "payload" / "SKILL.md").read_text(encoding="utf-8")
     assert "Never assemble" in skill, "nothing stops the agent hand-driving the primitives"
-    assert "never end your turn to ask whether to keep" in skill, (
-        "nothing stops the agent handing the polling back to the user mid-build"
+    assert "every turn you take must contain a `deck` call" in skill, (
+        "nothing stops the agent narrating progress instead of polling for it"
     )
     assert "--pause-after-plan" in skill, (
         "'show me the plan first' must route through deck, not the raw primitives"
     )
+    assert "Do **not** pause" in skill, (
+        "nothing distinguishes 'show me, then build it' (permission already given) "
+        "from 'let me approve first' (a gate) — an agent that pauses on the former "
+        "waits forever for a confirmation nobody intended to withhold"
+    )
+
+
+@pytest.mark.parametrize("doc", DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_referenced_skill_sections_exist(doc: Path) -> None:
+    """"reread the `## Workflow` section" is useless once that section is renamed.
+
+    Cross-references to SKILL.md headings are exactly the kind of detail nobody
+    re-checks during a rewrite, and a reader following one lands nowhere.
+    """
+    def flat(value: str) -> str:
+        # A reference wrapped across two lines is still the same reference.
+        return " ".join(value.split())
+
+    skill = (PACKAGE / "payload" / "SKILL.md").read_text(encoding="utf-8")
+    headings = {flat(h) for h in re.findall(r"^(##+ .+)$", skill, re.M)}
+    text = doc.read_text(encoding="utf-8")
+    referenced = {flat(r) for r in re.findall(r"`(##+ [^`]+)`", text)}
+    missing = referenced - headings
+    assert not missing, f"{doc.name} points at SKILL.md section(s) that do not exist: {sorted(missing)}"
+
+
+@pytest.mark.parametrize("doc", DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_documented_imports_actually_import(doc: Path) -> None:
+    """Run every `from palette_skill import ...` the docs print.
+
+    `run_deck` was documented in reference.md before it was exported, so the
+    first line of the example a reader would copy raised ImportError. Nothing
+    else here could have caught that: the symbol existed, the prose was right,
+    and only the import path was wrong.
+    """
+    text = doc.read_text(encoding="utf-8")
+    for names in re.findall(r"^from palette_skill import ([^\n(]+)$", text, re.M):
+        wanted = [n.strip() for n in names.split(",") if n.strip()]
+        # Do the import for real rather than probing with hasattr: a submodule
+        # like `build_skill` imports fine but is not an attribute of the
+        # package until something has imported it, so hasattr answers a
+        # different question than the reader's copy-paste asks.
+        module = __import__("palette_skill", fromlist=wanted)
+        for name in wanted:
+            assert getattr(module, name, None) is not None, (
+                f"{doc.name} shows `from palette_skill import {name}`, "
+                f"but that import fails — the example breaks on line one"
+            )
+
+
+def test_reference_documents_the_orchestrator() -> None:
+    """reference.md claims to be the full client surface, so it must hold `run_deck`.
+
+    It was absent for a while, which left the one function an agent should
+    reach for first documented only in SKILL.md prose — and reference.md is
+    what a reader consults when SKILL.md is not enough.
+    """
+    text = (PACKAGE / "payload" / "reference.md").read_text(encoding="utf-8")
+    for expected in ("run_deck", "pause_after_plan", "approve", ".palette-deck.json", "verified"):
+        assert expected in text, f"reference.md does not document {expected!r}"
+
+
+def test_guide_covers_the_preset_settings_cuga_changes() -> None:
+    """A reader who does not know these two are raised cannot reproduce a run.
+
+    Both were paid for in failed runs, and both are invisible unless documented
+    — nothing in the UI says the step length or the auto-continue rule changed.
+    """
+    guide = (PACKAGE / "GUIDE.md").read_text(encoding="utf-8")
+    for setting in ("sandbox_execution_timeout", "cuga_lite_nl_auto_continue"):
+        assert setting in guide, f"GUIDE.md never mentions {setting}, which demo_palette raises"
+
+
+def test_poll_window_fits_inside_every_host_step() -> None:
+    """The poll must fit one step, with room for interpreter start-up.
+
+    Too large and every call is killed mid-poll; too small and a ten-minute
+    build costs twenty-odd steps, which agents abandon around forty. Both were
+    observed. CUGA's 100s pairs with the 120s step that
+    `_apply_palette_supervisor_env` sets — change one and this fails.
+    """
+    from palette_skill import hosts
+
+    assert hosts.get("cuga").poll_seconds == 100, (
+        "CUGA's poll must stay matched to the preset's 120s sandbox_execution_timeout"
+    )
+    for host in hosts.HOSTS.values():
+        assert 25 <= host.poll_seconds <= 240, f"{host.key}: implausible poll window"
 
 
 def test_guide_and_testing_agree_on_the_install_extra() -> None:

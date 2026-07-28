@@ -25,6 +25,7 @@ from palette_skill.client import (
     PaletteTimeout,
     PaletteUnavailable,
     Progress,
+    run_deck,
 )
 
 __all__ = [
@@ -36,4 +37,5 @@ __all__ = [
     "PaletteTimeout",
     "PaletteUnavailable",
     "Progress",
+    "run_deck",
 ]

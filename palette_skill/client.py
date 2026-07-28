@@ -9,11 +9,21 @@ Two ways to run a build:
     One call, blocks until the deck is rendered. Fine from a shell or a
     notebook; too slow for hosts that cap a single code block's wall clock.
 
-``start_build(plan)`` then ``wait(thread_id, max_seconds=25)`` in a loop
+``start_build(plan)`` then ``wait(thread_id, max_seconds=...)`` in a loop
     Returns immediately, then each bounded wait reports progress and gives
     control back. This is what agent sandboxes want — CUGA, for instance,
-    kills a code block at ``sandbox_execution_timeout`` (30s by default) while
-    a deck takes two to four minutes.
+    kills a code block at ``sandbox_execution_timeout`` while a deck takes
+    three to ten minutes, most of it the geometry critic at three to four
+    minutes a call.
+
+``run_deck(pal, dest=...)``
+    What an agent should actually use: the two above plus drafting and the
+    download, behind one resumable call that owns the session. Driving the
+    pieces by hand is how a retry starts a second draft and orphans the first.
+
+Size ``max_seconds`` to fill the host's step budget. It decides how many calls
+a deck costs, and that — not any single call — is what runs out: a ten-minute
+build is twenty-odd polls at 25s and six at 100s.
 
 ``start_build`` needs the server's ``/build_async`` route. Deployments that
 predate it are detected via ``/openapi.json`` and fall back to the blocking
@@ -654,9 +664,15 @@ def _verify(dest: Path) -> dict[str, Any]:
     pptx_bytes = pptx.stat().st_size if pptx.is_file() else 0
     return {
         "pptx": str(pptx) if pptx.is_file() else None,
+        # The relative path above is relative to a working directory the user
+        # cannot see — an agent that reports "deck/deck.pptx" has told them
+        # nothing they can act on. Sandboxes restrict permissions rather than
+        # remap the filesystem, so the resolved path is the one they can open.
+        "pptx_path": str(pptx.resolve()) if pptx.is_file() else None,
         "pptx_bytes": pptx_bytes,
         "slides": [str(p) for p in slides],
         "slide_count": len(slides),
+        "dir": str(dest.resolve()),
         # A deck that "succeeded" at 12 KB or with no previews did not succeed.
         "verified": bool(pptx.is_file() and pptx_bytes > 20_000 and slides),
     }
@@ -698,6 +714,23 @@ def run_deck(
     stat-ing the files.
     """
     dest = Path(dest)
+    poll_cmd = f"palette-skill deck --dest {dest} --max-seconds {int(max_seconds)}"
+    approve_cmd = f"palette-skill deck --dest {dest} --approve"
+
+    def advancing(payload: dict[str, Any]) -> dict[str, Any]:
+        """Attach the next command, and where the deck is going, to every result.
+
+        The command is here because SKILL.md was read many turns ago and
+        competes with the model's pull toward summarising; one sitting in the
+        output the agent just printed is harder to talk itself out of.
+
+        ``dir`` is here — from the very first call, not just the last — because
+        a run that dies mid-build otherwise leaves the user with no idea where
+        to look. Most of the failures seen so far ended that way, and the
+        destination was knowable from the start every time.
+        """
+        return {**payload, "next": poll_cmd, "dir": str(dest.resolve())}
+
     state = _load_state(dest)
     stage = state.get("stage", "new")
 
@@ -721,7 +754,7 @@ def run_deck(
                 "pause_after_plan": pause_after_plan,
             }
         _save_state(dest, state)
-        return {**state, "done": False, "note": "started; call again to advance"}
+        return advancing({**state, "done": False, "note": "started; call again to advance"})
 
     thread_id = state["thread_id"]
 
@@ -755,14 +788,15 @@ def run_deck(
                 **state,
                 "done": False,
                 "plan_markdown": plan,
-                "note": "show this plan to the user; call again with --approve to build it",
+                "note": "show this plan to the user, then run `next` to build it",
+                "next": approve_cmd,
             }
 
         # Same session carries the plan and the deck.
         pal.start_build(plan, thread_id=thread_id)
         state["stage"] = "building"
         _save_state(dest, state)
-        return {**state, "done": False, "note": "plan ready, build started"}
+        return advancing({**state, "done": False, "note": "plan ready, build started"})
 
     if stage == "plan-ready":
         plan = Path(state["plan"]).read_text(encoding="utf-8")
@@ -771,14 +805,15 @@ def run_deck(
                 **state,
                 "done": False,
                 "plan_markdown": plan,
-                "note": "waiting for the user; call again with --approve to build it",
+                "note": "waiting for the user; run `next` once they approve",
+                "next": approve_cmd,
             }
         # Edits the user asked for are made to plan.md, so re-read it above
         # rather than replaying whatever the draft originally returned.
         pal.start_build(plan, thread_id=thread_id)
         state["stage"] = "building"
         _save_state(dest, state)
-        return {**state, "done": False, "note": "approved, build started"}
+        return advancing({**state, "done": False, "note": "approved, build started"})
 
     if stage == "building":
         snapshot = pal.wait(thread_id, max_seconds=max_seconds)

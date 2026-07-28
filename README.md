@@ -98,7 +98,7 @@ Open the URL. You should see the Palette UI — a chat composer on the left, a d
 
 **Plan editing.** Once a plan exists it shows as rendered Markdown in the chat thread. Click **Edit** in the plan card's header to switch to a textarea, make changes, and click **Done**. Then click **Build deck** (the orange button at the bottom of the plan card).
 
-**While the deck builds.** Status messages stream into the chat — designer running, slides coding, repair loop, ready. A 10–15 slide deck takes ~2–4 minutes on the default models.
+**While the deck builds.** Status messages stream into the chat — designer running, slides coding, repair loop, ready. A 10–15 slide deck takes ~3–10 minutes on the default models; the spread is how many geometry repair passes it needs.
 
 **Iterating.** When the deck is built:
 
@@ -245,6 +245,29 @@ cd ../cuga-agent-july25 && PALETTE_URL=http://127.0.0.1:18814 cuga start demo_pa
 The agent detects the server on startup and, if it is down, hands the user a
 `palette-skill serve` command rather than trying to start one itself.
 
+Ask the **Deck Builder** agent for a deck — *"Draft a plan for a Q3 sales
+review, show it to me, then build it"* — and it drives one resumable command:
+
+```bash
+palette-skill deck --request "..." --dest ./deck --max-seconds 100
+palette-skill deck --dest ./deck --max-seconds 100      # until "done": true
+```
+
+That command owns the session, the plan, the polling and the download, and it
+reports completion by stat-ing the files rather than by believing anything. It
+exists because an agent driving the underlying calls by hand loses the session
+on a retry and reports a deck it never built.
+
+Verify from your own shell, not from the chat:
+
+```bash
+ls -l cuga_workspace/*/deck/                    # deck.pptx, slide-01.png …
+cat  cuga_workspace/*/deck/.palette-deck.json   # "stage": "done"
+```
+
+See [palette_skill/GUIDE.md](palette_skill/GUIDE.md) for the full walkthrough,
+including release → consume → deck.
+
 ### Why it can't silently drift
 
 The skill is **generated from this repo and verified against it**, never
@@ -267,7 +290,7 @@ discovered on 3.12 and silently vanish on an interpreter upgrade.
 
 ### Background builds
 
-A deck takes two to four minutes; agent sandboxes routinely kill a step after
+A deck takes three to ten minutes; agent sandboxes routinely kill a step after
 30 seconds. `POST /build_async` starts a build and returns immediately, so the
 caller polls `/progress` and reads `/result` across several short steps. The
 blocking `POST /build` is unchanged, and `PaletteClient` feature-detects which

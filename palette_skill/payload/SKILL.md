@@ -45,7 +45,7 @@ Two shapes:
 
 ### One command per run_command call
 
-**Put exactly one `run_command` in each code block.** The step limit (about 30 seconds) applies to the *whole block*, not to each command in it, so two
+**Put exactly one `run_command` in each code block.** The step limit (about 120 seconds) applies to the *whole block*, not to each command in it, so two
 or three chained commands add up and the block is killed part-way — losing the
 work and telling you nothing about which command was slow.
 
@@ -144,40 +144,70 @@ anything.
 palette-skill deck --request "Q3 sales review deck" --dest ./deck
 ```
 
-Then call it again — same `--dest`, nothing else — until `"done": true`:
+Then call it again — same `--dest` — until `"done": true`:
+
+<!-- BEGIN GENERATED: polling -->
+Each call blocks for up to `--max-seconds` — 100 here, chosen to fit CUGA's step budget:
 
 ```bash
-palette-skill deck --dest ./deck
+palette-skill deck --dest ./deck --max-seconds 100
 ```
 
-Each call returns where it got to:
+A deck is **three to ten minutes** — the spread is how many geometry repair passes it needs, which is not known in advance — so expect roughly **2 to 6 calls**. Ten minutes of building is normal, not a stall.
+<!-- END GENERATED: polling -->
+
+Each call returns where it got to, and what to run next:
 
 ```json
-{"stage": "building", "done": false, "progress": "build [2/9] — coding slides"}
+{"stage": "building", "done": false,
+ "progress": "build [2/9] — coding slides",
+ "next": "palette-skill deck --dest ./deck --max-seconds 100"}
 ```
 
-Report that `progress` line to the user each time. A deck takes **two to four
-minutes**, so expect roughly **fifteen to twenty calls**. That is normal, not a
-stall. Keep going until `done` is true.
+**A `next` field means the deck is not finished — run it.** It is the exact
+command, already filled in. Report the `progress` line to the user in the same
+turn, and keep going until `done` is true and `next` is gone.
 
-**While a deck is building, never end your turn to ask whether to keep
-polling.** Offering to continue — "let me know if you'd like me to keep
-checking" — ends the run on many hosts, and it ends it with the deck
-unfinished and undownloaded, which is the worst of both outcomes: the build
-completed on the server and nobody collected it. The user asked for a deck;
-polling is how you make one, not a favour to check first. The only things
-that may end a deck task are `"done": true` or a raised error.
+**While a deck is building, every turn you take must contain a `deck` call.**
+Not a promise to make one. Announcing your intent — *"I'll keep polling"*, or
+*"let me know if you'd like me to keep checking"* — is prose with no command
+in it, and on hosts that read a turn of plain prose as a finished answer, that
+ends the run. The build then completes on the server with nobody collecting
+it: the worst outcome available, because the work was done and thrown away.
+
+So do not narrate progress on its own. Every turn between starting a deck and
+seeing `"done": true` must actually run `deck` again, with the `--max-seconds`
+above. Let that command's output *be* your progress update. Printing what it returned
+tells the user the same thing prose would, and keeps the run alive to reach the
+deck.
+
+The user asked for a deck; polling is how one is made, not a favour to check
+first. The only things that may end a deck task are `"done": true` or a raised
+error.
 
 The final call returns the proof:
 
 ```json
 {"stage": "done", "done": true, "verified": true,
- "pptx": "deck/deck.pptx", "pptx_bytes": 489236, "slide_count": 9}
+ "pptx": "deck/deck.pptx",
+ "pptx_path": "/Users/you/proj/cuga_workspace/<thread>/deck/deck.pptx",
+ "dir": "/Users/you/proj/cuga_workspace/<thread>/deck",
+ "pptx_bytes": 489236, "slide_count": 9}
 ```
 
 **`verified` is computed from the filesystem** — the file exists, is over 20 KB,
 and previews are present. If you did not see `"verified": true`, there is no
 deck, whatever else you believe.
+
+<!-- BEGIN GENERATED: delivery -->
+When `verified` is true, tell the user, in this order:
+
+1. **How many slides**, and the deck title.
+2. **`pptx_path`** — the absolute path. Never the relative `pptx`; your `./` is a working directory they have never seen.
+3. That they can open or download it from the **Files** panel for this conversation in the CUGA UI — no terminal needed. The files appear there as soon as they are written, and for someone working in a chat window this is usually the answer they actually wanted.
+
+Then anything from `unrepaired` or `lint` that is non-empty, and say so if the slide count does not match what the plan asked for.
+<!-- END GENERATED: delivery -->
 
 Already have a plan? Pass it instead of a request and drafting is skipped:
 
@@ -187,8 +217,17 @@ palette-skill deck --plan-file ./plan.md --dest ./deck
 
 ### Showing the plan before building
 
-Asked to *draft a plan, show it, then build it* — add `--pause-after-plan`.
-Still the same command, still called repeatedly:
+Two different requests, and telling them apart matters — pausing when nobody
+meant you to leaves a deck unbuilt while you wait for a confirmation that is
+never coming.
+
+**"Draft a plan, show it to me, then build it"** — permission is already in the
+sentence. Do **not** pause. Run `deck` normally; it writes the plan to
+`<dest>/plan.md` the moment Stage 1 finishes and carries straight on. Show them
+that file while the build runs, and keep polling.
+
+**"Let me approve the plan first" / "don't build until I say" / "check with me
+before building"** — an explicit gate. Only then add `--pause-after-plan`:
 
 ```bash
 palette-skill deck --request "Q3 sales review deck" --dest ./deck --pause-after-plan
@@ -200,7 +239,8 @@ It stops at `"stage": "plan-ready"` and hands you the plan:
 ```json
 {"stage": "plan-ready", "done": false, "plan": "deck/plan.md",
  "plan_markdown": "# Q3 Sales Review\n...",
- "note": "show this plan to the user; call again with --approve to build it"}
+ "note": "show this plan to the user, then run `next` to build it",
+ "next": "palette-skill deck --dest ./deck --approve"}
 ```
 
 Show them `plan_markdown`. If they want changes, edit `<dest>/plan.md` — the
@@ -345,7 +385,8 @@ An error, or a `.pptx` under 20 KB, means there is no deck.
 Required, not optional:
 
 0. You have listed the output files and seen their sizes (above).
-1. The `.pptx` is downloaded into the workspace and you have stated its path.
+1. You have given the user the **absolute** `pptx_path`, not the relative
+   `pptx`. A path they cannot resolve is not an answer.
 2. You have looked at the preview images — not just the slide count.
 3. `unrepaired` and `lint` from the build result are reported if non-empty.
 4. Slide count matches what the plan asked for. If it does not, say so.

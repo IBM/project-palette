@@ -46,15 +46,42 @@ So the skill is **not** a copy of Palette. It is:
 The agent installs the client, calls the service, and gets back a `.pptx`. The
 heavy machinery stays on the server, where it already works.
 
+```mermaid
+flowchart LR
+  subgraph agent["Agent host — CUGA, Claude Code, …"]
+    direction TB
+    LLM["model reads<br/>SKILL.md"]
+    SB["sandbox<br/>(Seatbelt / Docker)"]
+    CLI["palette-skill deck<br/>· owns thread id<br/>· owns polling<br/>· stats the files"]
+    DECK[("./deck/<br/>deck.pptx · slide-NN.png<br/>plan.md · .palette-deck.json")]
+    LLM --> SB --> CLI --> DECK
+  end
+
+  subgraph svc["Palette service — outside the sandbox"]
+    direction TB
+    S1["Stage 1 · crafter<br/>request → plan.md"]
+    S2["Stage 2 · designer + coder<br/>plan → pptxgenjs"]
+    S3["Stage 3 · geometry repair<br/>1–N passes, why builds vary"]
+    NODE["Node · LibreOffice · Poppler · IBM Plex"]
+    S1 --> S2 --> S3 --> NODE
+  end
+
+  CLI -- "POST /draft_async · /build_async" --> S1
+  CLI -- "GET /progress (bounded poll)" --> S3
+  NODE -- ".pptx + previews" --> DECK
 ```
-   CUGA / Claude Code                 Palette service
-   ┌──────────────────┐               ┌──────────────────────┐
-   │ reads description│               │ Stage 1  crafter     │
-   │ opens SKILL.md   │  ── HTTP ──►  │ Stage 2  designer    │
-   │ runs palette-skill               │ Stage 3  geometry fix│
-   │ writes ./deck/   │  ◄── .pptx ── │ Node + LibreOffice   │
-   └──────────────────┘               └──────────────────────┘
-```
+
+Three things that diagram is trying to make obvious:
+
+- **The sandbox boundary is why the skill exists.** Node, LibreOffice, Poppler
+  and the model roster cannot live inside an agent sandbox, so the skill ships
+  instructions and a thin client rather than a copy of Palette.
+- **`deck` sits on the sandbox side and owns the session.** Thread id, plan
+  file, polling and download are all its business, which is what stops an agent
+  losing a build halfway through.
+- **Stage 3 is why "how long" has no fixed answer.** The repair loop runs as
+  many passes as the slides need, so the same request is three minutes on one
+  run and ten on the next.
 
 The only coupling is the HTTP contract. Palette's pipeline can be rewritten
 without the skill noticing.
@@ -226,9 +253,43 @@ the skills panel. Ask:
 
 > Build me a deck about vector databases for backend engineers.
 
-Expect `load_skill("palette")` → install wheel → `start-draft` → poll →
-`start-build` → poll ~10× → download. **Five to seven minutes**, mostly polling.
-That is normal, not a stall.
+Expect `load_skill("palette")` → install the wheel → then one command repeated:
+
+```bash
+palette-skill deck --request "..." --dest ./deck --max-seconds 100
+palette-skill deck --dest ./deck --max-seconds 100     # until "done": true
+```
+
+**Four to twelve minutes end to end**, mostly polling — the build itself is
+three to ten of those, plus about a minute of drafting and the wheel install.
+Measured example: 8m44s of build across two geometry repair passes, where a
+single geometry critic call ran 186s and another 232s. That is normal, not a
+stall.
+
+If you see the agent driving `start-draft` / `wait-draft` / `start-build`
+separately, the installed skill is out of date — reinstall it.
+
+*"Draft a plan, show it to me, then build it"* does **not** pause — permission
+is already in the sentence. `deck` writes `deck/plan.md` the moment Stage 1
+finishes, so the agent shows you that while the build carries on.
+
+Ask for a gate explicitly — *"let me approve the plan first"*, *"don't build
+until I say"* — and the agent adds `--pause-after-plan`, stops at
+`"stage": "plan-ready"`, and waits for `--approve`. Same command, same session.
+Edit `deck/plan.md` before approving and the build uses your edits.
+
+The distinction matters in one direction only: pausing when nobody asked leaves
+the deck unbuilt while the agent waits for a confirmation that never comes.
+
+The preset raises two CUGA settings on your behalf, both because a deck is
+minutes of polling rather than a handful of calls:
+
+| Setting | Default | `demo_palette` | Why |
+|---|---|---|---|
+| `sandbox_execution_timeout` | 30s | **120s** | Each poll is one step. At 30s a ten-minute build is twenty-odd steps and agents abandon it around forty. |
+| `cuga_lite_nl_auto_continue` | false | **true** | A progress note written as prose would otherwise read as a finished answer and end the run mid-build. |
+
+Both use `setdefault`, so exporting either yourself still wins.
 
 ### Step 7 — check it actually built something
 
@@ -238,6 +299,10 @@ The agent's `./` is the sandbox workspace, not your shell's:
 ls -l cuga_workspace/*/deck/
 ```
 
+A finished deck leaves `deck.pptx`, `slide-01.png` … and `.palette-deck.json`
+holding `"stage": "done"`. That state file is also the tell for *how* it was
+built: `palette-skill deck` writes it, a hand-driven sequence does not.
+
 An agent can report a deck it never built. Ask Palette, not the chat:
 
 ```bash
@@ -246,6 +311,16 @@ ls -td ~/.local/state/palette/workspace/*/ | head -1 | xargs ls -l
 
 A real build leaves `deck.pptx`, `deck.pdf`, `slide-*.png`, `deck.json` and
 `output_js/`. **Only `session.log` means a draft ran and no build followed.**
+
+The server log is the ground truth for the whole session:
+
+```bash
+grep -E "draft_async|build_async" ~/.local/state/palette/server.log | tail
+```
+
+One thread id carrying both a draft and a build is a healthy run. Several
+thread ids with no build is the classic failure: each retry started a fresh
+draft and orphaned the last.
 
 ---
 
@@ -378,6 +453,51 @@ checkout's `config.py` and then **frozen**. A skill advertising
 `palette-qwen-32b` has to ship with a server that serves it, so the artifact
 version tracks Palette rather than the client. Everything else — the execution
 section, the endpoint table — is re-rendered per host at build time.
+
+### Release → deck, in full
+
+The whole loop, from a Palette checkout to a `.pptx` you can open. Roughly ten
+minutes, most of it the build.
+
+```bash
+# ── in project-palette ────────────────────────────────────────────────
+make release                                    # dist/, four artifacts
+palette-skill serve ensure                      # a server to talk to
+
+# ── in the consuming repo, which needs no Palette source ──────────────
+mkdir -p .cuga/skills
+tar xzf ../project-palette-july25/dist/palette-skill-0.1.0-cuga.tar.gz \
+        -C .cuga/skills/
+
+uv run cuga start demo_palette                  # port 7860
+```
+
+Ask the **Deck Builder** agent:
+
+> Draft a plan for a Q3 sales review, show it to me, then build it.
+
+Then verify from your own shell, not from the chat:
+
+```bash
+ls -l cuga_workspace/*/deck/                    # deck.pptx, slide-01.png …
+cat  cuga_workspace/*/deck/.palette-deck.json   # "stage": "done"
+grep -E "draft_async|build_async" ~/.local/state/palette/server.log | tail -2
+```
+
+Three things make that a real deck rather than a reported one:
+
+1. **`.palette-deck.json` says `"stage": "done"`.** Written by
+   `palette-skill deck`, by nothing else.
+2. **The two server-log lines share one thread id.** Several draft ids with no
+   build is the classic failure — each retry started over and orphaned the last.
+3. **The `.pptx` opens and carries IBM Plex.** Palette's renderer forces that
+   typeface, so a deck built some other way cannot have it:
+
+```bash
+unzip -p cuga_workspace/*/deck/deck.pptx ppt/slides/slide1.xml | grep -c "IBM Plex"
+```
+
+If any of those disagree with what the agent told you, believe the files.
 
 ---
 

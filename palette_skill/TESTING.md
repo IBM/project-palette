@@ -190,19 +190,34 @@ PALETTE_DECK_OUT=~/Desktop/decks \
   uv run pytest tests/e2e/skills/test_palette_deck_e2e.py -m e2e -q -s
 ```
 
-Two routes, both from markdown checked into the repo:
+Three routes, matching how people actually arrive at a deck:
 
 - **Route A** — `fixtures/plan_agent_skills.md`, already in plan format, goes
-  straight to Stage 2. Runs inside CUGA's default 30s step limit.
+  straight to Stage 2.
 - **Route B** — `fixtures/source_sandbox_notes.md`, raw notes, goes through
-  Stage 1 first. The test widens the step limit for this one: chaining a draft
-  and a build is roughly seventeen bounded polls, and the poll *count* is what
-  exhausts the run, not any single call.
+  Stage 1 first.
+- **Route C** — no fixture at all: *"Draft a plan for a Q3 sales review, show it
+  to me, then build it."*
+
+All three run at the 120s step the `demo_palette` preset sets, with the skill
+polling at 100s to fit inside it. That pairing is the point: at the 30s default
+a ten-minute build is twenty-odd polls and the agent abandons it around step 40,
+with the build finishing on the server minutes later and nobody collecting it.
+
+**Route C is the one that finds things.** A and B name the stage, say "poll
+until the build finishes", sometimes pass a `--max-seconds` value — under that
+much instruction the agent cannot fail the way it fails in the wild. C says what
+a person says. Every skill bug found so far came from a prompt shaped like C.
 
 Decks land in `PALETTE_DECK_OUT`. The tests assert on the artifact — valid
 OOXML, slide-part count, preview PNGs, minimum file size, and IBM Plex
 typefaces as proof it came out of Palette's renderer rather than being
 hand-written.
+
+Route C additionally asserts `.palette-deck.json` exists with `"stage": "done"`.
+That file is written by `palette-skill deck` and by nothing else, so its absence
+means the agent hand-drove the draft/build sequence — the arrangement that
+produces a deck announcement with no deck behind it.
 
 **Do not pipe this through `head`.** SIGPIPE kills pytest partway and the run
 looks like a failure that never happened.
@@ -242,11 +257,28 @@ ls -td ~/.local/state/palette/workspace/*/ | head -1 | xargs ls -l
 
 # did a build ever start for it?
 grep "build_async\|draft_async" ~/.local/state/palette/server.log | tail -5
+
+# did the orchestrator run, or did the agent drive it by hand?
+cat cuga_workspace/*/deck/.palette-deck.json
 ```
 
 A session directory containing only `session.log` means a draft ran and no
 build followed. A real build leaves `deck.pptx`, `deck.pdf`, `slide-*.png`,
 `deck.json` and `output_js/`.
+
+**Read the thread ids, not just the line count.** One id carrying both a
+`draft_async` and a `build_async` is a healthy run. Several ids with no build
+is the signature failure — each retry started a fresh draft and orphaned the
+previous session, and the run ends with a confident summary of files that were
+never written. That shape has been reproduced deliberately; it looks like this:
+
+```
+21:31:09  draft_async thread=skill-1d218b19  accepted
+21:31:47  draft_async thread=skill-9ead9bec  accepted     ← new id, previous orphaned
+21:32:23  draft_async thread=skill-6d448feb  accepted
+21:36:45  draft_async thread=skill-58b00b8d  accepted
+          (no build_async anywhere)
+```
 
 ---
 
@@ -316,9 +348,17 @@ fails if a variant carries another host's words.
 
 The gates cover the *shape* of the API. They cannot see meaning:
 
-- **Behaviour changes behind a stable signature.** A stage gets faster or
-  slower and the "two to four minutes" prose in SKILL.md is still hand-written.
-  `budget_seconds` in `contract.py` is maintained by hand too.
+- **Behaviour changes behind a stable signature.** A stage gets slower and
+  nothing fails: the build-duration range and the call estimate are rendered
+  from `hosts.py`'s `poll_seconds`, but the *range itself* is a hand-written
+  constant in `render_polling`, as is `budget_seconds` in `contract.py`. Both
+  are measurements someone took once. Retake them when a stage changes.
+- **Instructions that are accurate but not followable.** Every skill failure
+  seen in the wild so far has been this, not a wrong fact — a section that told
+  the agent to drive the primitives by hand, a poll window that made a deck
+  cost more steps than an agent will sit through, a "report what happened"
+  clause that licensed stopping mid-build. Each read fine and each was found by
+  running the thing, never by a test. Tier 9 exists for that reason.
 - **New capability that deserves its own workflow section.** The generator will
   not invent one.
 - **The `description:` frontmatter.** The routing trigger is entirely
@@ -326,5 +366,6 @@ The gates cover the *shape* of the API. They cannot see meaning:
   the agent never reaches for it and no test can tell you.
 
 Rule of thumb: **shape changes are caught, meaning changes are not.** After a
-behavioural change, reread the `## Workflow` and `## Builds are slow` sections
-yourself — they rot first.
+behavioural change, reread `## Making a deck` and `## Never claim a deck that
+does not exist` yourself — they rot first, and they are the two an agent acts
+on most directly.

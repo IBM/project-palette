@@ -50,6 +50,51 @@ Passing `thread_id=None` to `draft` or `start_build` mints one for you;
 | `pal.deck(tid)` | `dict` — `slide_count`, `title`, `building` |
 | `pal.progress(tid)` | `Progress` |
 
+### The whole deck, resumably
+
+`run_deck` is the one you want unless you have a reason not to. It composes
+Stage 1, Stages 2–3 and the download into a single resumable step, owning the
+thread id, the plan file and the polling so a retry resumes instead of starting
+over. Everything below it is the machinery it drives.
+
+```python
+from palette_skill import PaletteClient, run_deck
+
+pal = PaletteClient()
+state = run_deck(
+    pal,
+    dest="./deck",              # deck.pptx, slide-NN.png, plan.md and state land here
+    request="Q3 sales review",  # or plan_file=... to skip drafting
+    max_seconds=100.0,          # how long one call may block; fit it to your step budget
+    pause_after_plan=False,     # stop at plan-ready so a human can approve
+    approve=False,              # release a paused plan into the build
+)
+while not state["done"]:
+    state = run_deck(pal, dest="./deck", max_seconds=100.0)
+```
+
+Progress is kept in `<dest>/.palette-deck.json`, so calls may be minutes apart,
+in different processes, or after a crash. Stages: `new` → `drafting` →
+(`plan-ready`) → `building` → `done`.
+
+The returned dict always carries `stage` and `done`. A finished deck also
+carries the numbers behind the claim:
+
+```python
+{"stage": "done", "done": True, "verified": True,
+ "pptx": "deck/deck.pptx", "pptx_bytes": 489236,
+ "slides": [...], "slide_count": 9}
+```
+
+**`verified` is computed by stat-ing the files** — the `.pptx` exists, is over
+20 KB, and the previews are on disk. A stored `done` whose files have since
+gone re-verifies to `False`, so the state file cannot vouch for itself. Treat
+`verified` as the only evidence a deck exists.
+
+Raises `PaletteError` if the draft returns fewer than `MIN_PLAN_CHARS` (200) —
+the crafter can return an empty document on an otherwise successful draft, and
+building it costs minutes to produce nothing.
+
 ### Stage 1
 
 ```python
@@ -205,18 +250,43 @@ Commands that act on a session need `--thread-id <TID>`. None of them need `--ba
 Where Python is not available, the same surface is a CLI. Every subcommand
 prints one JSON object to stdout.
 
+Making a deck is one subcommand, called until it says it is done:
+
+```bash
+palette-skill deck --request "Deck on RAG" --dest ./deck --max-seconds 100
+palette-skill deck --dest ./deck --max-seconds 100          # repeat until "done": true
+```
+
+With a checkpoint for approval:
+
+```bash
+palette-skill deck --request "Deck on RAG" --dest ./deck --pause-after-plan
+palette-skill deck --dest ./deck                            # -> "stage": "plan-ready"
+# show the user <dest>/plan.md; edit it if they want changes
+palette-skill deck --dest ./deck --approve                  # builds the file as it now stands
+```
+
+The pieces underneath, for anything `deck` does not cover — retrying a slide,
+editing one, inspecting a session:
+
 ```bash
 palette-skill health
 palette-skill draft --request "Deck on RAG" --dest ./plan.md
 palette-skill start-build --plan-file ./plan.md
-palette-skill wait --thread-id skill-ab12cd34 --max-seconds 25
+palette-skill wait --thread-id skill-ab12cd34 --max-seconds 100
 palette-skill result --thread-id skill-ab12cd34
 palette-skill previews --thread-id skill-ab12cd34 --dest-dir ./deck
 palette-skill download --thread-id skill-ab12cd34 --dest ./deck/deck.pptx
+palette-skill deck-status --thread-id skill-ab12cd34        # slide count, title, build state
 ```
 
 `build`, `start-build`, `wait`, and `result` mirror the Python methods exactly,
-including the bounded-wait behaviour.
+including the bounded-wait behaviour. Do not assemble them into a deck by hand
+— that is what `deck` is for, and driving the sequence yourself is how sessions
+get orphaned.
+
+`--max-seconds` should fill your host's step budget. Too small and a ten-minute
+build costs twenty-odd calls; too large and each call is killed mid-poll.
 
 None of these take `--base-url`. The client resolves the server itself — an
 explicit argument, then `$PALETTE_URL`, then the built-in default. Pass

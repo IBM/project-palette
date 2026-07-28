@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from palette_skill import build_skill, contract  # noqa: E402
+from palette_skill import build_skill, contract, hosts  # noqa: E402
 
 APP_PY = REPO_ROOT / "app.py"
 SKILL_MD = REPO_ROOT / "palette_skill" / "payload" / "SKILL.md"
@@ -281,6 +281,37 @@ class TestGeneratedContent:
             f"Available: {sorted(available)}."
         )
         assert referenced, "SKILL.md should tell the user how to start a local service"
+
+
+class TestDeliveryIsHostShaped:
+    """"Where is my deck" has a different right answer per host.
+
+    An absolute path answers it for someone at a shell. Someone in a chat UI is
+    not at a shell, and a path into a per-thread sandbox workspace is nearly
+    useless to them — which is exactly what happened: the agent reported
+    `deck/deck.pptx`, correct inside the sandbox, and the user went looking in
+    their own cwd and found nothing.
+    """
+
+    def _render(self, host_key: str) -> str:
+        build_skill._HOST = hosts.get(host_key)
+        try:
+            return build_skill.render_delivery()
+        finally:
+            build_skill._HOST = hosts.get(hosts.DEFAULT_HOST)
+
+    def test_every_host_is_told_to_give_an_absolute_path(self) -> None:
+        for key in hosts.HOSTS:
+            assert "pptx_path" in self._render(key), f"{key} may report a path nobody can resolve"
+
+    def test_cuga_points_at_the_files_panel(self) -> None:
+        """CUGA already serves these files — /api/workspace/tree and /download."""
+        assert "Files" in self._render("cuga")
+
+    def test_hosts_without_a_panel_do_not_invent_one(self) -> None:
+        """Claude Code writes to the user's own filesystem; there is no panel."""
+        for key in ("claude-code", "generic"):
+            assert "Files" not in self._render(key), f"{key} was told about a UI it does not have"
 
 
 class TestHostPortability:

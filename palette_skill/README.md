@@ -22,11 +22,23 @@ pal.download(tid, "./deck.pptx")
 
 ## Why it is shaped this way
 
-Agent hosts cap how long a single step may run — CUGA's default is 30 seconds,
-and a deck takes two to four minutes. So the client separates *starting* a
-build from *waiting* on it, and `wait()` takes a `max_seconds` bound: call it
-repeatedly, report progress each time, and a multi-minute build fits inside a
-sequence of short steps.
+Agent hosts cap how long a single step may run, and a deck takes three to ten
+minutes — the spread is how many geometry repair passes it needs, which is not
+knowable in advance. So the client separates *starting* a build from *waiting*
+on it, and `wait()` takes a `max_seconds` bound: call it repeatedly, report
+progress each time, and a multi-minute build fits inside a sequence of short
+steps.
+
+The bound matters more than it looks. It sets how many steps a deck costs, and
+that is what runs out first: a ten-minute build is twenty-odd calls at 25s and
+six at 100s, and agents abandon the twenty long before any step limit is
+reached. Each host profile in `hosts.py` therefore carries a `poll_seconds`
+sized to that host's step budget, and the generated `polling` region in
+SKILL.md renders it into the commands the agent is told to run.
+
+`run_deck` wraps the whole sequence — draft, build, download — behind one
+resumable call, because the sequence is long enough that an agent driving it by
+hand loses the session on a retry.
 
 ## Layout
 

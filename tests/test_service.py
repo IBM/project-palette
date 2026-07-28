@@ -471,6 +471,30 @@ class TestDeckOrchestration:
         assert checked["verified"] is True
         assert checked["slide_count"] == 1
 
+    def test_verify_reports_a_path_the_user_can_open(self, tmp_path: Path) -> None:
+        """A relative path names a working directory the user has never seen.
+
+        The agent's `./` is a per-thread sandbox workspace, so "saved to
+        deck/deck.pptx" sends someone looking in their own shell's cwd and
+        finding nothing. Sandboxes restrict permissions rather than remap the
+        filesystem, so the resolved path is the one that actually opens.
+        """
+        from palette_skill.client import _verify
+
+        (tmp_path / "deck.pptx").write_bytes(b"x" * 50_000)
+        (tmp_path / "slide-01.png").write_bytes(b"\x89PNG" + b"x" * 9_000)
+        checked = _verify(tmp_path)
+
+        assert Path(checked["pptx_path"]).is_absolute()
+        assert Path(checked["pptx_path"]).is_file()
+        assert Path(checked["dir"]).is_absolute()
+
+    def test_a_missing_deck_has_no_path_to_offer(self, tmp_path: Path) -> None:
+        from palette_skill.client import _verify
+
+        checked = _verify(tmp_path)
+        assert checked["pptx_path"] is None and checked["verified"] is False
+
     def test_state_survives_between_calls(self, tmp_path: Path) -> None:
         """Resumability is the whole point — a retry must not orphan the session."""
         from palette_skill.client import _load_state, _save_state
@@ -579,6 +603,43 @@ class TestPlanApproval:
         result = self._advance(pal, tmp_path)
         assert result["stage"] == "building"
         assert len(pal.built) == 1
+
+    def test_every_unfinished_result_carries_the_next_command(self, tmp_path: Path) -> None:
+        """The instruction has to travel with the output, not live only in SKILL.md.
+
+        An agent that has been polling for six minutes is being pulled toward
+        summarising for the user, and SKILL.md was read many turns ago. A
+        literal command in the payload it just printed is much harder to talk
+        itself out of. Runs that ended mid-build all ended on a turn whose last
+        output had nothing actionable in it.
+        """
+        pal = self._FakeDraft()
+        started = self._advance(pal, tmp_path, request="Q3 sales review")
+        assert started["next"].startswith("palette-skill deck --dest ")
+        assert "--max-seconds" in started["next"]
+
+        building = self._advance(pal, tmp_path)
+        assert building["done"] is False
+        assert "--max-seconds" in building["next"]
+
+    def test_a_paused_plan_points_at_approve_not_at_polling(self, tmp_path: Path) -> None:
+        """Telling a waiting agent to poll would spin it against a stopped machine."""
+        pal = self._FakeDraft()
+        self._advance(pal, tmp_path, request="Q3 sales review", pause_after_plan=True)
+        paused = self._advance(pal, tmp_path)
+        assert paused["stage"] == "plan-ready"
+        assert paused["next"].endswith("--approve")
+
+    def test_a_finished_deck_has_nothing_next(self, tmp_path: Path) -> None:
+        """`next` present means keep going, so a done deck must not carry one."""
+        from palette_skill.client import PaletteClient, _save_state, run_deck
+
+        (tmp_path / "deck.pptx").write_bytes(b"x" * 50_000)
+        (tmp_path / "slide-01.png").write_bytes(b"\x89PNG" + b"x" * 9_000)
+        _save_state(tmp_path, {"stage": "done", "thread_id": "skill-abc"})
+        finished = run_deck(PaletteClient("http://unused"), dest=tmp_path)
+        assert finished["done"] is True and finished["verified"] is True
+        assert "next" not in finished
 
     def test_an_empty_plan_is_refused_before_the_build(self, tmp_path: Path) -> None:
         """The crafter really did return 0 chars once. Four minutes to render it."""
