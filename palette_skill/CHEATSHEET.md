@@ -48,8 +48,14 @@ open cuga_workspace/*/deck/deck.pptx
 **One thread id across both log lines** means one healthy session. Several
 draft ids with no build is the classic failure.
 
-Starting from nothing — no `.venv`, fresh clone, or after a Level 3 reset —
-run `make install` first (§1, Level 3).
+**First time on this machine?** `make install` handles the Python and Node
+packages, but not the system tools Palette's renderer needs — Node itself,
+LibreOffice, Poppler, and a RITS key. Those are in the repo root
+[README](../README.md#1-prerequisites), and `palette-skill serve doctor` (§3)
+tells you which are missing rather than letting a build fail three minutes in.
+
+Otherwise starting from nothing — no `.venv`, fresh clone, or after a Level 3
+reset — `make install` is all you need (§1, Level 3).
 
 ---
 
