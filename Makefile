@@ -132,8 +132,15 @@ skill-status: ## Report drift between this repo and an installed skill
 skill-uninstall: ## Remove an installed skill (HOST=cuga|claude-code, CUGA=<path>)
 	$(PY) -m palette_skill.install --uninstall --host $(HOST) --into $(CUGA)
 
-release: skill ## Build shippable artifacts into dist/ (wheel + per-host tarballs)
-	$(PY) -m palette_skill.release $(if $(BASE_URL),--base-url $(BASE_URL),)
+release: skill ## Build artifacts into dist/. VERSION=X.Y.Z cuts a real release.
+	@# No VERSION: a throwaway local build, overwrites freely — the dev loop.
+	@# With VERSION: writes __version__, demands a clean tree, and refuses to
+	@# reuse a version already in dist/. The version is in every artifact's
+	@# filename, so two releases sharing one are indistinguishable to whoever
+	@# you hand them to.
+	$(PY) -m palette_skill.release \
+	  $(if $(VERSION),--version $(VERSION),) \
+	  $(if $(BASE_URL),--base-url $(BASE_URL),)
 
 skill: skill-check skill-test ## Verify the skill is current and correct
 

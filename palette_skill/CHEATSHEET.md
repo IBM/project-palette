@@ -1,8 +1,12 @@
 # Cheatsheet — tear down, rebuild, test
 
-Fast reference for the loop: **reset → build → release → install → run → verify.**
-Longer explanations live in [GUIDE.md](GUIDE.md); the full verification ladder is
-in [TESTING.md](TESTING.md).
+Every runnable command for the skill, in one place: **reset → build → release
+→ install → run → verify.** If you want to *do* something, it is here.
+
+The others explain rather than instruct — [GUIDE.md](GUIDE.md) for what the
+skill is and why, [TESTING.md](TESTING.md) for the verification ladder,
+[README.md](README.md) for the client's own layout. A map of all of them is in
+the repo root README.
 
 Two repos are involved. Throughout:
 
@@ -115,12 +119,52 @@ you without a test runner.
 > dependencies somewhere you did not intend. `make install` targets
 > `.venv/bin/python` explicitly to avoid that.
 
-**Survives every level:** your `RITS_API_KEY` in `~/.config/palette/env`. Only
-`PURGE_CONFIG=1` removes it, and that backs it up to `/tmp` first.
+### Level 4 — nuke it, both repos
+
+Nothing left anywhere: no service, no state, no installed skill, no artifacts,
+no venv, no agent workspaces. Everything below is rebuildable from source.
+
+```bash
+# ── Palette ───────────────────────────────────────────────────────────
+cd $PAL
+git status --short                    # commit anything you want to keep — FIRST
+palette-skill serve stop || true      # in case a launchd agent is running
+palette-skill serve uninstall || true # remove the launchd agent itself
+make distclean CUGA=$CUGA             # skills, state, .venv, node_modules, dist
+rm -rf dist                           # if you also want the artifacts gone
+
+# ── CUGA ──────────────────────────────────────────────────────────────
+cd $CUGA
+rm -rf .cuga/skills/palette           # in case it was untarred rather than installed
+rm -rf cuga_workspace                 # every thread's sandbox workspace
+rm -rf /tmp/.venv                     # the shared sandbox venv the agent installs into
+
+# ── rebuild ───────────────────────────────────────────────────────────
+cd $PAL && make install && source .venv/bin/activate
+```
+
+Then §0 from the top.
+
+`/tmp/.venv` is worth knowing about: it is the venv **inside** the agent
+sandbox, shared across threads and rebuilt on demand. A stale client there is
+invisible from either repo, and it is why an agent can keep running an old
+`palette-skill` after you have installed a new one.
+
+**Survives even this:** your `RITS_API_KEY` in `~/.config/palette/env`. It is
+the one thing on the machine that cannot be rebuilt from source, so no target
+removes it without `PURGE_CONFIG=1` — which backs it up to `/tmp` first:
+
+```bash
+make distclean CUGA=$CUGA PURGE_CONFIG=1     # only if you mean it
+```
 
 ---
 
 ## 2. Build and release
+
+Two modes, matching the two reasons you might build.
+
+**Local build** — for your own testing. Overwrites freely, no ceremony:
 
 ```bash
 cd $PAL
@@ -128,7 +172,20 @@ make skill                    # verify the skill matches contract.py + config.py
 make release                  # -> dist/  (wheel + one tarball per host)
 ```
 
-`release` depends on `skill`, so it refuses to build from a stale payload.
+**A real release** — for anyone else. Writes `__version__`, demands a clean
+tree, and refuses to reuse a version already in `dist/`:
+
+```bash
+make release VERSION=0.2.0
+git commit -am 'release 0.2.0' && git tag v0.2.0
+```
+
+The version is in every artifact's *filename*, so two builds sharing one cannot
+be told apart by whoever you hand them to, and `dist/` overwrites the older
+silently. That is why `VERSION` turns the guards on.
+
+`release` depends on `skill` either way, so it refuses to build from a stale
+payload.
 
 | Artifact | For |
 | --- | --- |
@@ -186,6 +243,33 @@ Either way, confirm what landed:
 ```bash
 cd $PAL && make skill-status CUGA=$CUGA
 ```
+
+### Pointing at a Palette that runs elsewhere
+
+Code Engine, a shared box, a colleague's machine — the skill is unchanged, only
+the URL differs. **Skip §3 entirely**: no `serve` commands, no Node, no
+LibreOffice, no RITS key. That is the service owner's problem, not yours.
+
+*Pin it into the skill* — best when a team shares one deployment, because every
+agent then works with no environment set at all:
+
+```bash
+cd $PAL
+make release BASE_URL=https://palette.example.cloud       # into the artifact
+# or, into an install straight from the checkout:
+.venv/bin/python -m palette_skill.install \
+  --into $CUGA --base-url https://palette.example.cloud
+```
+
+*Or set it per run* — best when the URL varies by person or session:
+
+```bash
+PALETTE_URL=https://palette.example.cloud uv run cuga start demo_palette
+```
+
+`$PALETTE_URL` wins over a pinned URL either way. Why you would choose one over
+the other, and what a pinned artifact stops telling the agent, is in
+[GUIDE.md](GUIDE.md) §5b.
 
 ---
 
@@ -262,6 +346,10 @@ pytest partway and it looks like a failure that never happened.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
+| `version must look like 1.2.3` | `VERSION` is not X.Y.Z | `make release VERSION=0.2.0` |
+| `working tree is dirty` | releasing uncommitted work | commit or stash; the artifact records a commit that must describe it |
+| `0.2.0 is already built` | that version is in `dist/` | bump `VERSION` — never reship a version under new bytes |
+| Agent runs an old `palette-skill` after you reinstalled | stale client in the sandbox venv | `rm -rf /tmp/.venv` (§1 Level 4) |
 | `palette-skill: command not found` | `.venv` not activated, or `make install` never ran | `source .venv/bin/activate`, else `make install` |
 | `error: Failed to parse: ".[dev]"` | doubled quotes — the shell kept the inner pair | `uv pip install -e '.[dev]'` |
 | `make install` → `Error 1` | no venv, or a foreign one active | `deactivate`, then `make install` from `$PAL` |

@@ -182,15 +182,16 @@ def test_reference_documents_the_orchestrator() -> None:
         assert expected in text, f"reference.md does not document {expected!r}"
 
 
-def test_guide_covers_the_preset_settings_cuga_changes() -> None:
+def test_cheatsheet_covers_the_preset_settings_cuga_changes() -> None:
     """A reader who does not know these two are raised cannot reproduce a run.
 
     Both were paid for in failed runs, and both are invisible unless documented
     — nothing in the UI says the step length or the auto-continue rule changed.
+    The cheatsheet is where operational facts live; the guide links to it.
     """
-    guide = (PACKAGE / "GUIDE.md").read_text(encoding="utf-8")
+    sheet = (PACKAGE / "CHEATSHEET.md").read_text(encoding="utf-8")
     for setting in ("sandbox_execution_timeout", "cuga_lite_nl_auto_continue"):
-        assert setting in guide, f"GUIDE.md never mentions {setting}, which demo_palette raises"
+        assert setting in sheet, f"CHEATSHEET.md never mentions {setting}, which demo_palette raises"
 
 
 def test_makefile_never_shells_out_to_a_bare_interpreter() -> None:
@@ -223,6 +224,26 @@ def test_makefile_never_shells_out_to_a_bare_interpreter() -> None:
         "Makefile recipes invoke a bare interpreter, which resolves outside "
         f".venv: {offenders}"
     )
+
+
+@pytest.mark.parametrize("doc", DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_no_doc_teaches_an_install_that_omits_the_package(doc: Path) -> None:
+    """`-r requirements.txt` installs the deps but not this package.
+
+    The console scripts then never appear and every documented `palette-skill`
+    command fails with "command not found". The root README taught this for a
+    while, and also described `make install` as running it — a claim that went
+    stale the moment the target was fixed. Docs that describe *what a target
+    does* rot silently; docs that just name the target do not.
+    """
+    text = doc.read_text(encoding="utf-8")
+    for banned, why in (
+        ("uv pip install -r requirements.txt",
+         "installs dependencies but not the package, so palette-skill is missing"),
+        ("pip install -r requirements.txt && npm install",
+         "describes a `make install` that no longer exists"),
+    ):
+        assert banned not in text, f"{doc.name} teaches: {banned!r} — {why}"
 
 
 def test_clean_targets_point_at_a_rebuild_that_works() -> None:
@@ -258,9 +279,15 @@ def test_poll_window_fits_inside_every_host_step() -> None:
         assert 25 <= host.poll_seconds <= 240, f"{host.key}: implausible poll window"
 
 
-def test_guide_and_testing_agree_on_the_install_extra() -> None:
-    """Both walkthroughs must name the same extra, or one of them wastes an hour."""
-    for doc in (PACKAGE / "GUIDE.md", PACKAGE / "TESTING.md"):
+def test_docs_that_install_agree_on_the_extra() -> None:
+    """Every doc that names an extra must name the same one.
+
+    `.[server]` omits pytest, so a reader who follows the wrong doc gets a
+    working server and no test runner, and discovers it much later. Only docs
+    that actually carry install commands are checked — the guide now delegates
+    those to the cheatsheet and legitimately names none.
+    """
+    for doc in (PACKAGE / "CHEATSHEET.md", PACKAGE / "TESTING.md", REPO_ROOT / "README.md"):
         text = doc.read_text(encoding="utf-8")
         assert "'.[dev]'" in text, f"{doc.name} does not tell you to install .[dev]"
 
@@ -275,3 +302,29 @@ def test_every_doc_is_linked_from_somewhere() -> None:
         PACKAGE / "CHEATSHEET.md",
     ):
         assert doc.name in corpus, f"{doc.name} is not linked from any other doc"
+
+
+def test_only_the_cheatsheet_carries_the_full_run_sequence() -> None:
+    """One runnable copy of the loop, so a changed command is one edit.
+
+    Before this, `cuga start demo_palette` appeared in five documents and every
+    core instruction in four to seven. Nothing was wrong on the day it was
+    written; the drift arrives later, one doc at a time, and the existing gates
+    cannot see it — they check that a command *exists*, not that two docs agree
+    on which command to run. The root README described a `make install` that
+    had been changed an hour earlier, and that is the mild version.
+
+    So: exactly one doc may print the start command inside a code fence.
+    Others describe the preset, link here, and stay true for free.
+    """
+    offenders = []
+    for doc in DOCS:
+        fenced = "\n".join(
+            re.findall(r"```[a-z]*\n(.*?)```", doc.read_text(encoding="utf-8"), re.DOTALL)
+        )
+        if "cuga start demo_palette" in fenced and doc.name != "CHEATSHEET.md":
+            offenders.append(doc.name)
+    assert not offenders, (
+        f"{offenders} print the run command in a code fence. Keep runnable "
+        "sequences in CHEATSHEET.md and link to it, or they drift apart."
+    )

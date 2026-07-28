@@ -56,16 +56,31 @@ On Debian/Ubuntu: `apt install python3 python3-pip nodejs npm libreoffice popple
 git clone <this-repo-url>
 cd project-palette
 
-# Python: uv creates an isolated env in .venv and installs deps
-uv venv
+make install                 # creates .venv, installs .[dev] + npm deps
 source .venv/bin/activate
-uv pip install -r requirements.txt
+```
 
-# Node: just pptxgenjs
+`make install` creates `.venv` if it is missing, installs the package itself so
+the `palette-skill` and `palette-serve` commands exist, and prints a version at
+the end — if you do not see one, it did not finish.
+
+<details>
+<summary>By hand instead</summary>
+
+```bash
+uv venv && source .venv/bin/activate
+uv pip install -e '.[dev]'       # one set of quotes; '".[dev]"' fails to parse
 npm install
 ```
 
-> One-liner alternative: `make install` runs `pip install -r requirements.txt && npm install`. Use this if you've already got an activated env.
+`.[dev]` is `.[server]` plus `pytest`. Note `-e .`, not `-r requirements.txt` —
+the latter installs the dependencies but not the package, leaving every
+`palette-skill …` command as "command not found".
+
+Run this with **no other project's venv active**. A `uv venv` has no `pip` of
+its own, so a bare `pip install` lands wherever `PATH` points instead.
+
+</details>
 
 ### 3. Set your RITS key
 
@@ -234,40 +249,18 @@ export PALETTE_URL=https://<your-palette-host>
 ### With CUGA
 
 CUGA ships a preset that starts a supervisor agent with this skill loaded — a
-*Deck Builder* rather than a generic skills demo:
-
-```bash
-make skill-install CUGA=../cuga-agent-july25     # install the skill
-palette-skill serve ensure                        # make sure a server is up
-cd ../cuga-agent-july25 && PALETTE_URL=http://127.0.0.1:18814 cuga start demo_palette
-```
+*Deck Builder* rather than a generic skills demo. Ask it for a deck and it
+drives one resumable command that owns the session, the plan, the polling and
+the download, and reports completion by stat-ing the files rather than by
+believing anything. That shape exists because an agent driving the underlying
+calls by hand loses the session on a retry and reports a deck it never built.
 
 The agent detects the server on startup and, if it is down, hands the user a
 `palette-skill serve` command rather than trying to start one itself.
 
-Ask the **Deck Builder** agent for a deck — *"Draft a plan for a Q3 sales
-review, show it to me, then build it"* — and it drives one resumable command:
-
-```bash
-palette-skill deck --request "..." --dest ./deck --max-seconds 100
-palette-skill deck --dest ./deck --max-seconds 100      # until "done": true
-```
-
-That command owns the session, the plan, the polling and the download, and it
-reports completion by stat-ing the files rather than by believing anything. It
-exists because an agent driving the underlying calls by hand loses the session
-on a retry and reports a deck it never built.
-
-Verify from your own shell, not from the chat:
-
-```bash
-ls -l cuga_workspace/*/deck/                    # deck.pptx, slide-01.png …
-cat  cuga_workspace/*/deck/.palette-deck.json   # "stage": "done"
-```
-
-See [palette_skill/CHEATSHEET.md](palette_skill/CHEATSHEET.md) to tear down and
-re-test quickly, or [palette_skill/GUIDE.md](palette_skill/GUIDE.md) for the full walkthrough,
-including release → consume → deck.
+**Commands:** [palette_skill/CHEATSHEET.md](palette_skill/CHEATSHEET.md) — §0 is
+the whole loop in six lines, §6 is how to tell a real deck from a reported one.
+**Concepts:** [palette_skill/GUIDE.md](palette_skill/GUIDE.md).
 
 ### Why it can't silently drift
 
@@ -333,6 +326,32 @@ workspace/         Per-session decks (gitignored, ephemeral)
 palette_skill/     Agent skill — HTTP client, generated SKILL.md, installer
 tests/             Contract tests binding the skill to app.py + config.py
 ```
+
+---
+
+## Which doc is for what
+
+Palette's own docs are this file. Everything about the **agent skill** lives
+under [`palette_skill/`](palette_skill/), split by what you are trying to do
+rather than by topic — so a command appears in exactly one of them.
+
+| Doc | Read it when | Contains |
+|---|---|---|
+| **this file** | you want to run Palette itself | install, the web UI, config, containers, deployment |
+| [`palette_skill/CHEATSHEET.md`](palette_skill/CHEATSHEET.md) | **you want to do something now** | every runnable command: reset levels, build, release, install, run, verify, and a symptom→fix table |
+| [`palette_skill/GUIDE.md`](palette_skill/GUIDE.md) | you are changing the skill | what a skill *is*, the architecture diagram, what each `make` target produces, when to cut a release |
+| [`palette_skill/TESTING.md`](palette_skill/TESTING.md) | you want to trust it | nine tiers from "no dependencies" to "a real model builds a real deck", and what each failure looks like |
+| [`palette_skill/README.md`](palette_skill/README.md) | you are reading the code | why the client is shaped this way, module-by-module layout |
+| [`palette_skill/payload/SKILL.md`](palette_skill/payload/SKILL.md) | you want to know what the agent is told | the instructions themselves — largely generated, so read it rather than editing the generated regions |
+| [`palette_skill/payload/reference.md`](palette_skill/payload/reference.md) | you are calling the client from Python | full signatures, error types, the CLI surface |
+
+**Start at the cheatsheet.** §0 is six lines from a working checkout to a deck.
+The others explain *why*; it is the only one that tells you *what to type*.
+
+That split is deliberate. These instructions used to appear in four to seven
+documents each, and they drifted — one described a `make` target that had been
+changed an hour earlier. Runnable sequences now live in the cheatsheet alone,
+and a test fails the build if another doc grows one.
 
 ---
 

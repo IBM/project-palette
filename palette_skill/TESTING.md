@@ -226,49 +226,29 @@ looks like a failure that never happened.
 
 ## Tier 8 — the agent itself
 
-```bash
-palette-skill serve ensure
-cd ../cuga-agent-july25
-PALETTE_URL=http://127.0.0.1:18814 uv run cuga start demo_palette
-```
+Start it and ask for a deck — commands in [CHEATSHEET.md](CHEATSHEET.md) §0.
+Skills appear in the right-hand panel because `/api/skills` requires
+`skills.enabled` **and** `enable_shell_tool`; the preset sets both.
 
-Ask it for a deck. Skills appear in the right-hand panel because `/api/skills`
-requires `skills.enabled` **and** `enable_shell_tool`; the preset sets both.
+Then verify with CHEATSHEET §6, which is the same three checks every time.
+What this tier adds is knowing *what the failures look like*.
 
-### Where the output actually goes
+**The agent's `./` is not your shell's.** Each thread gets
+`<cwd>/cuga_workspace/<thread_id>/`, so `./deck/deck.pptx` lives under a
+directory named by a thread id you did not choose. The id appears in the server
+log and in the UI's workspace panel.
 
-The agent's `./` is **not** your shell's working directory. Each thread gets
-`<cwd>/cuga_workspace/<thread_id>/`, so `./deck/deck.pptx` means:
-
-```bash
-ls -l cuga_workspace/*/deck/
-```
-
-The thread id appears in the server log and in the UI's workspace panel.
-
-### Check it really built something
-
-An agent can report a deck it never built. Verify against Palette rather than
-the chat:
-
-```bash
-# the newest session, and whether it produced anything
-ls -td ~/.local/state/palette/workspace/*/ | head -1 | xargs ls -l
-
-# did a build ever start for it?
-grep "build_async\|draft_async" ~/.local/state/palette/server.log | tail -5
-
-# did the orchestrator run, or did the agent drive it by hand?
-cat cuga_workspace/*/deck/.palette-deck.json
-```
-
-A session directory containing only `session.log` means a draft ran and no
+**A session directory holding only `session.log`** means a draft ran and no
 build followed. A real build leaves `deck.pptx`, `deck.pdf`, `slide-*.png`,
-`deck.json` and `output_js/`.
+`deck.json` and `output_js/`:
 
-**Read the thread ids, not just the line count.** One id carrying both a
-`draft_async` and a `build_async` is a healthy run. Several ids with no build
-is the signature failure — each retry started a fresh draft and orphaned the
+```bash
+ls -td ~/.local/state/palette/workspace/*/ | head -1 | xargs ls -l
+```
+
+**Read the thread ids, not the line count.** One id carrying both a
+`draft_async` and a `build_async` is a healthy run. Several ids with no build is
+the signature failure — each retry started a fresh draft and orphaned the
 previous session, and the run ends with a confident summary of files that were
 never written. That shape has been reproduced deliberately; it looks like this:
 

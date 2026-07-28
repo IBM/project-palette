@@ -172,161 +172,28 @@ the explicit opt-out and it backs the file up first.
 
 ---
 
-## 5. Start fresh, build the skill, use it
+## 5. Getting it running
 
-Both repos are siblings in `~/Documents/GitHub/`. Every command runs from the
-Palette repo unless stated.
+The commands live in one place — [CHEATSHEET.md](CHEATSHEET.md) — so that when
+one changes there is a single line to edit rather than five. §0 there is the
+whole loop in six lines; §1 covers the reset levels, §2–6 build, release,
+install, run and verify.
 
-### Step 1 — wipe
+What is worth knowing *before* you follow it:
 
-```bash
-cd ~/Documents/GitHub/project-palette-july25
-git status --short          # commit anything untracked FIRST
-make distclean CUGA=../cuga-agent-july25
-```
-
-Removes both installed skills, `~/.local/state/palette`, the running service,
-`.venv`, `node_modules`, `build`, `*.egg-info`. Keeps both repos and your key.
-
-### Step 2 — rebuild
-
-```bash
-uv venv
-uv pip install -e '.[dev]'     # NOT .[server] — [dev] adds pytest on top
-npm install                    # pptxgenjs; the renderer fails without it
-make hooks                     # pre-commit guard
-```
-
-`[server]` is for a box that only runs the service. Install that and
-`make skill-test` fails on a missing pytest — and adding pytest to
-`[project.dependencies]` to fix it correctly trips
-`test_client_runtime_is_httpx_only`, because that wheel ships to every sandbox.
-
-`npm install` is not optional. Without `pptxgenjs` the renderer fails **three
-minutes into a build**, not at startup.
-
-### Step 3 — build the skill
-
-```bash
-make skill-build      # writes payload/SKILL.md + reference.md
-make skill            # all green ← the skill is ready
-```
-
-Inspect what will ship:
-
-```bash
-head -6 palette_skill/payload/SKILL.md    # the description a model routes on
-```
-
-### Step 4 — start Palette
-
-```bash
-palette-skill serve init      # first time only; writes ~/.config/palette/env
-$EDITOR ~/.config/palette/env # set RITS_API_KEY=...
-
-palette-skill serve doctor    # want: can_build true, process ready
-palette-skill serve ensure    # start, wait for /health
-```
-
-Read `doctor` before continuing. `container: blocked` is fine unless you ran
-`make docker-build`. `can_build: false` means the key is not visible.
-
-### Step 5 — install into CUGA
-
-```bash
-make skill-install CUGA=../cuga-agent-july25
-make skill-status  CUGA=../cuga-agent-july25    # "in sync (…, host cuga, …)"
-```
-
-Confirm CUGA sees it — no LLM or server needed:
-
-```bash
-cd ../cuga-agent-july25
-uv sync
-uv run pytest tests/e2e/skills/test_palette_skill_invocation.py -q   # 6 passed
-```
-
-### Step 6 — use it
-
-```bash
-PALETTE_URL=http://127.0.0.1:18814 uv run cuga start demo_palette
-```
-
-Open the demo on port 7860. The **Deck Builder** agent appears with `palette` in
-the skills panel. Ask:
-
-> Build me a deck about vector databases for backend engineers.
-
-Expect `load_skill("palette")` → install the wheel → then one command repeated:
-
-```bash
-palette-skill deck --request "..." --dest ./deck --max-seconds 100
-palette-skill deck --dest ./deck --max-seconds 100     # until "done": true
-```
-
-**Four to twelve minutes end to end**, mostly polling — the build itself is
-three to ten of those, plus about a minute of drafting and the wheel install.
-Measured example: 8m44s of build across two geometry repair passes, where a
-single geometry critic call ran 186s and another 232s. That is normal, not a
-stall.
-
-If you see the agent driving `start-draft` / `wait-draft` / `start-build`
-separately, the installed skill is out of date — reinstall it.
-
-*"Draft a plan, show it to me, then build it"* does **not** pause — permission
-is already in the sentence. `deck` writes `deck/plan.md` the moment Stage 1
-finishes, so the agent shows you that while the build carries on.
-
-Ask for a gate explicitly — *"let me approve the plan first"*, *"don't build
-until I say"* — and the agent adds `--pause-after-plan`, stops at
-`"stage": "plan-ready"`, and waits for `--approve`. Same command, same session.
-Edit `deck/plan.md` before approving and the build uses your edits.
-
-The distinction matters in one direction only: pausing when nobody asked leaves
-the deck unbuilt while the agent waits for a confirmation that never comes.
-
-The preset raises two CUGA settings on your behalf, both because a deck is
-minutes of polling rather than a handful of calls:
-
-| Setting | Default | `demo_palette` | Why |
-|---|---|---|---|
-| `sandbox_execution_timeout` | 30s | **120s** | Each poll is one step. At 30s a ten-minute build is twenty-odd steps and agents abandon it around forty. |
-| `cuga_lite_nl_auto_continue` | false | **true** | A progress note written as prose would otherwise read as a finished answer and end the run mid-build. |
-
-Both use `setdefault`, so exporting either yourself still wins.
-
-### Step 7 — check it actually built something
-
-The agent's `./` is the sandbox workspace, not your shell's:
-
-```bash
-ls -l cuga_workspace/*/deck/
-```
-
-A finished deck leaves `deck.pptx`, `slide-01.png` … and `.palette-deck.json`
-holding `"stage": "done"`. That state file is also the tell for *how* it was
-built: `palette-skill deck` writes it, a hand-driven sequence does not.
-
-An agent can report a deck it never built. Ask Palette, not the chat:
-
-```bash
-ls -td ~/.local/state/palette/workspace/*/ | head -1 | xargs ls -l
-```
-
-A real build leaves `deck.pptx`, `deck.pdf`, `slide-*.png`, `deck.json` and
-`output_js/`. **Only `session.log` means a draft ran and no build followed.**
-
-The server log is the ground truth for the whole session:
-
-```bash
-grep -E "draft_async|build_async" ~/.local/state/palette/server.log | tail
-```
-
-One thread id carrying both a draft and a build is a healthy run. Several
-thread ids with no build is the classic failure: each retry started a fresh
-draft and orphaned the last.
-
----
+- **`make install` first on a fresh checkout.** It creates `.venv` and installs
+  the package, so the `palette-skill` command exists. `-r requirements.txt`
+  alone installs the dependencies and not the package, which fails later and
+  confusingly.
+- **The reset levels are not interchangeable.** Level 2 deletes
+  `~/.local/state/palette`, and with it `server.log` — the only record of
+  whether a build ever started. Do not wipe it while diagnosing a run.
+- **`~/.config/palette/env` survives every level.** Your RITS key is the one
+  thing on the machine that cannot be rebuilt from source, so no target removes
+  it without `PURGE_CONFIG=1`, which backs it up first.
+- **Verify from the filesystem, not the chat.** An agent can describe a deck it
+  never built; that has happened. The three independent checks are in
+  CHEATSHEET §6.
 
 ## 5b. When Palette is deployed elsewhere
 
@@ -337,31 +204,19 @@ machine — the skill is unchanged. It is an HTTP client; only the URL differs.
 LibreOffice, Poppler, Node, IBM Plex, and the RITS key. All of that belongs to
 whoever runs the service. You do not need `.[server]` either.
 
-**Two ways to point at it.**
+**Two ways to point at it**, and the choice is about who owns the URL. Commands
+for both are in [CHEATSHEET.md](CHEATSHEET.md) §4.
 
-*Pin it into the skill* — best when a team shares one deployment, because every
-agent then works with no environment set at all:
+*Pin it into the skill* when a team shares one deployment. The generated
+`defaults` region then reads *"Base URL — `https://palette.example.cloud`. This
+skill was built for that deployment"*, and the URL is recorded in the manifest
+so `--check` compares like with like. Every agent then works with no
+environment set at all — which is the point: one fewer thing for each person to
+get right.
 
-```bash
-uv pip install -e '.[dev]'        # only the client + tests
-make skill-build
-python -m palette_skill.install \
-  --into ../cuga-agent-july25 \
-  --base-url https://palette.example.cloud
-```
-
-The generated `defaults` region then reads *"Base URL —
-`https://palette.example.cloud`. This skill was built for that deployment"*, and
-the URL is recorded in the manifest so `--check` compares like with like.
-
-*Or set it at run time* — best when the URL changes per person or per session:
-
-```bash
-make skill-install CUGA=../cuga-agent-july25
-PALETTE_URL=https://palette.example.cloud uv run cuga start demo_palette
-```
-
-`$PALETTE_URL` wins over a pinned URL either way.
+*Set `$PALETTE_URL` at run time* when the URL varies by person or session. It
+wins over a pinned URL either way, so pinning is a default rather than a
+commitment.
 
 **What the agent does when it cannot reach a remote deployment.** It reports the
 URL and the error and asks you to confirm it — and specifically does *not*
@@ -397,16 +252,18 @@ Each tarball is a complete skill folder — `SKILL.md`, `reference.md`, the clie
 wheel, and a manifest — rendered for that host. **~72 KB, no network, no build
 step, no Palette source required.**
 
-### Consuming it, the way skills.sh skills are consumed
+### Which skills root, and why it matters
+
+Untarring into a skills root is the whole install — [CHEATSHEET.md](CHEATSHEET.md)
+§4 has the command. The only real decision is *which* root:
 
 ```bash
-mkdir -p .agents/skills
-tar xzf palette-skill-0.1.0-cuga.tar.gz -C .agents/skills/
+tar xzf palette-skill-0.1.0-cuga.tar.gz -C .cuga/skills/      # CUGA's default
+tar xzf palette-skill-0.1.0-cuga.tar.gz -C .agents/skills/    # the skills.sh root
 ```
 
-That is the whole install. Set `[skills] root = "agents"` in CUGA's
-`settings.toml` and Palette sits alongside anything you added with
-`npx skills add`, discovered the same way.
+`.agents/skills` with `[skills] root = "agents"` in CUGA's `settings.toml` puts
+Palette alongside anything added with `npx skills add`, discovered the same way.
 
 > CUGA scans **one** skills root. If you use `npx skills add ... -a universal`
 > (which writes `.agents/skills/`) and also install Palette under
@@ -450,6 +307,32 @@ So:
 - **Mixed** → ship unpinned and set `PALETTE_URL` per environment. It wins over
   a pinned URL either way.
 
+### When to cut one at all
+
+Two loops, and most changes only need the first.
+
+| | Command | Needs a version? |
+| --- | --- | --- |
+| **Dev** — you and CUGA on one machine | `make skill-install CUGA=…` | no |
+| **Ship** — anyone without a Palette checkout | `make release VERSION=X.Y.Z` | yes |
+
+`skill-install` overwrites in place, and drift detection is hash-based
+(`client_fingerprint` over the client sources, plus a hash per markdown file),
+so the dev loop needs no version discipline at all. `make skill-status` tells
+you which side moved.
+
+A release is different because the version lands in every artifact's
+*filename*. Ship twice as `0.1.0` and `dist/` overwrites silently, the
+recipient cannot tell the two apart, and the manifest check that would catch it
+— *"package version moved"* — can never fire, because both sides read `0.1.0`.
+So `VERSION` also turns on a clean-tree requirement and a refusal to reuse.
+
+**Does a given change even touch the skill?** `make skill` answers it in a
+second, and the pre-commit hook runs it whenever `palette_skill/` is staged.
+Roughly: `contract.py`, `client.py`, `cli.py`, `hosts.py` and `payload/` *are*
+the skill; `app.py` routes and `config.py` rosters are what it describes; the
+renderer and UI are behind the HTTP contract and usually invisible to it.
+
 ### A release is pinned to a Palette version
 
 The model menus and example plans inside `SKILL.md` are rendered from the
@@ -457,53 +340,6 @@ checkout's `config.py` and then **frozen**. A skill advertising
 `palette-qwen-32b` has to ship with a server that serves it, so the artifact
 version tracks Palette rather than the client. Everything else — the execution
 section, the endpoint table — is re-rendered per host at build time.
-
-### Release → deck, in full
-
-The whole loop, from a Palette checkout to a `.pptx` you can open. Roughly ten
-minutes, most of it the build.
-
-```bash
-# ── in project-palette ────────────────────────────────────────────────
-make release                                    # dist/, four artifacts
-palette-skill serve ensure                      # a server to talk to
-
-# ── in the consuming repo, which needs no Palette source ──────────────
-mkdir -p .cuga/skills
-tar xzf ../project-palette-july25/dist/palette-skill-0.1.0-cuga.tar.gz \
-        -C .cuga/skills/
-
-uv run cuga start demo_palette                  # port 7860
-```
-
-Ask the **Deck Builder** agent:
-
-> Draft a plan for a Q3 sales review, show it to me, then build it.
-
-Then verify from your own shell, not from the chat:
-
-```bash
-ls -l cuga_workspace/*/deck/                    # deck.pptx, slide-01.png …
-cat  cuga_workspace/*/deck/.palette-deck.json   # "stage": "done"
-grep -E "draft_async|build_async" ~/.local/state/palette/server.log | tail -2
-```
-
-Three things make that a real deck rather than a reported one:
-
-1. **`.palette-deck.json` says `"stage": "done"`.** Written by
-   `palette-skill deck`, by nothing else.
-2. **The two server-log lines share one thread id.** Several draft ids with no
-   build is the classic failure — each retry started over and orphaned the last.
-3. **The `.pptx` opens and carries IBM Plex.** Palette's renderer forces that
-   typeface, so a deck built some other way cannot have it:
-
-```bash
-unzip -p cuga_workspace/*/deck/deck.pptx ppt/slides/slide1.xml | grep -c "IBM Plex"
-```
-
-If any of those disagree with what the agent told you, believe the files.
-
----
 
 ## 6. Day to day, once it works
 

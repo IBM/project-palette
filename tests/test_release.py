@@ -51,6 +51,74 @@ class TestReleaseShape:
             release.build()
 
 
+class TestVersionedRelease:
+    """`make release VERSION=X.Y.Z` is what makes an artifact someone else can trust.
+
+    The version is not metadata — it is in every artifact's filename. Ship two
+    different builds as 0.1.0 and `dist/` silently overwrites, the recipient
+    cannot tell them apart, and the manifest's "package version moved" check
+    can never fire because both sides read 0.1.0.
+    """
+
+    def test_version_must_be_x_y_z(self) -> None:
+        for bad in ("2.0", "v1.2.3", "1.2.3-rc1", ""):
+            with pytest.raises(SystemExit, match="1.2.3"):
+                release._assert_publishable(bad)
+
+    def test_format_is_checked_before_anything_expensive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A typo should not be withheld until you have committed for other reasons."""
+        monkeypatch.setattr(release, "_git", lambda *a: "M dirty.py")
+        with pytest.raises(SystemExit, match="1.2.3"):
+            release._assert_publishable("nonsense")
+
+    def test_a_dirty_tree_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(release, "_git", lambda *a: " M palette_skill/client.py")
+        with pytest.raises(SystemExit, match="dirty"):
+            release._assert_publishable("9.9.9")
+
+    def test_reusing_a_version_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(release, "_git", lambda *a: "")
+        monkeypatch.setattr(release, "DIST", tmp_path)
+        (tmp_path / "palette-skill-9.9.9-cuga.tar.gz").write_bytes(b"x")
+        with pytest.raises(SystemExit, match="already built"):
+            release._assert_publishable("9.9.9")
+
+    def test_a_clean_tree_and_fresh_version_passes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(release, "_git", lambda *a: "")
+        monkeypatch.setattr(release, "DIST", tmp_path)
+        release._assert_publishable("9.9.9")  # no raise
+
+    def test_set_version_rewrites_and_round_trips(self, tmp_path: Path) -> None:
+        """Writing the wrong file, or none, would ship a mislabelled artifact."""
+        fake = tmp_path / "__init__.py"
+        fake.write_text('x = 1\n__version__ = "0.1.0"\ny = 2\n')
+        original = release.INIT_PY
+        release.INIT_PY = fake
+        try:
+            release.set_version("3.4.5")
+            assert '__version__ = "3.4.5"' in fake.read_text()
+            assert "x = 1" in fake.read_text() and "y = 2" in fake.read_text()
+        finally:
+            release.INIT_PY = original
+
+    def test_set_version_fails_loudly_if_the_anchor_is_gone(self, tmp_path: Path) -> None:
+        fake = tmp_path / "__init__.py"
+        fake.write_text("# no version here\n")
+        original = release.INIT_PY
+        release.INIT_PY = fake
+        try:
+            with pytest.raises(SystemExit, match="could not find"):
+                release.set_version("3.4.5")
+        finally:
+            release.INIT_PY = original
+
+
 class TestNonVendoredRendering:
     """Installed from a wheel, there is nothing to vendor."""
 
