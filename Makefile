@@ -8,7 +8,7 @@
 .PHONY: help install dev docker-build docker-run clean \
         ce-build ce-push ce-buildpush ce-deploy ce-release \
         skill skill-build skill-check skill-test skill-install skill-status \
-        skill-uninstall clean-state distclean release hooks \
+        skill-uninstall clean-state distclean release hooks handbook handbook-check \
         serve-init serve-doctor serve-start serve-stop serve-status serve-logs \
         serve-install serve-uninstall
 
@@ -143,6 +143,12 @@ release: skill ## Build artifacts into dist/. VERSION=X.Y.Z cuts a real release.
 	  $(if $(BASE_URL),--base-url $(BASE_URL),)
 
 skill: skill-check skill-test ## Verify the skill is current and correct
+
+handbook: ## Rebuild docs/skill-handbook.html from its fragment source
+	$(PY) scripts/build-handbook.py
+
+handbook-check: ## Fail if the servable handbook is stale
+	$(PY) scripts/build-handbook.py --check
 
 hooks: ## Install the pre-commit guard (blocks commits that leave the skill stale)
 	@mkdir -p .git/hooks

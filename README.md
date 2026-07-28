@@ -344,7 +344,12 @@ rather than by topic — so a command appears in exactly one of them.
 | [`palette_skill/README.md`](palette_skill/README.md) | you are reading the code | why the client is shaped this way, module-by-module layout |
 | [`palette_skill/payload/SKILL.md`](palette_skill/payload/SKILL.md) | you want to know what the agent is told | the instructions themselves — largely generated, so read it rather than editing the generated regions |
 | [`palette_skill/payload/reference.md`](palette_skill/payload/reference.md) | you are calling the client from Python | full signatures, error types, the CLI surface |
-| [`docs/skill-handbook.html`](docs/skill-handbook.html) | you want the whole picture in one page | build → release → update → consume → verify, with the failure modes that shaped it. Open it in a browser. |
+| [`docs/skill-handbook.html`](docs/skill-handbook.html) | you want the whole picture in one page | build → release → update → consume → verify, with the failure modes that shaped it. A standalone page — open it locally, or serve it as-is. |
+
+The handbook is self-contained — no CDN, no fonts to fetch, no build step — so
+`python -m http.server -d docs` or dropping it on any static host both work.
+It is generated from `docs/skill-handbook.body.html` by `make handbook`; edit
+the fragment, not the page, and a test fails the build if the two diverge.
 
 **Start at the cheatsheet.** §0 is six lines from a working checkout to a deck.
 The others explain *why*; it is the only one that tells you *what to type*.

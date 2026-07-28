@@ -36,6 +36,21 @@ MSG
   exit 1
 fi
 
+# The servable handbook is generated from a fragment. Editing the fragment and
+# committing only that ships a docs/ page that no longer matches its source.
+if git diff --cached --name-only | grep -q 'docs/skill-handbook.body.html'; then
+  if ! "$PY" scripts/build-handbook.py --check >/dev/null 2>&1; then
+    cat <<'MSG'
+
+  docs/skill-handbook.html is stale relative to its fragment source.
+
+      make handbook && git add docs/skill-handbook.html
+
+MSG
+    exit 1
+  fi
+fi
+
 if ! "$PY" -m pytest tests/test_skill_contract.py -q >/tmp/skill_guard.log 2>&1; then
   tail -25 /tmp/skill_guard.log
   cat <<'MSG'

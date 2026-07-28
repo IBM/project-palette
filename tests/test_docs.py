@@ -330,7 +330,8 @@ def test_only_the_cheatsheet_carries_the_full_run_sequence() -> None:
     )
 
 
-HANDBOOK = REPO_ROOT / "docs" / "skill-handbook.html"
+HANDBOOK = REPO_ROOT / "docs" / "skill-handbook.body.html"
+HANDBOOK_PAGE = REPO_ROOT / "docs" / "skill-handbook.html"
 
 
 class TestHandbook:
@@ -367,3 +368,46 @@ class TestHandbook:
     def test_it_is_linked_from_the_readme(self) -> None:
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
         assert "docs/skill-handbook.html" in readme
+
+
+class TestHandbookIsServable:
+    """The page in docs/ has to work when a static host serves it directly.
+
+    The source fragment carries no doctype, charset or viewport, because the
+    Artifact publisher supplies those. Serve that same file from nginx and you
+    get quirks mode, mojibake in place of the arrows and em-dashes, and a
+    desktop-width page on a phone. So the fragment is the source and the
+    servable page is generated from it — one copy of the prose, two outputs.
+    """
+
+    def test_the_generated_page_is_current(self) -> None:
+        """Same contract as `make skill-check`: regenerate, compare, fail if stale."""
+        # Imported by path: the filename has a hyphen, so it is not importable
+        # as a module name.
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "build_handbook", REPO_ROOT / "scripts" / "build-handbook.py"
+        )
+        build_handbook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build_handbook)
+
+        assert HANDBOOK_PAGE.read_text(encoding="utf-8") == build_handbook.render(), (
+            "docs/skill-handbook.html is stale — run `make handbook` and commit the result"
+        )
+
+    def test_it_carries_what_a_browser_needs(self) -> None:
+        page = HANDBOOK_PAGE.read_text(encoding="utf-8")
+        for needed, why in (
+            ("<!doctype html>", "without it the page renders in quirks mode"),
+            ('charset="utf-8"', "the arrows and em-dashes become mojibake"),
+            ("width=device-width", "a phone gets a desktop-width page"),
+            ("<title>", "the browser tab is otherwise the filename"),
+        ):
+            assert needed in page, f"servable handbook is missing {needed!r} — {why}"
+
+    def test_the_fragment_stays_a_fragment(self) -> None:
+        """Adding a skeleton to the source would nest one inside the publisher's."""
+        fragment = HANDBOOK.read_text(encoding="utf-8")
+        assert "<!doctype" not in fragment.lower()
+        assert "<body>" not in fragment.lower()
