@@ -616,7 +616,7 @@ Bump VERSION, or delete those files if you are certain they were never shared.</
       <div class="cmd">
         <div class="cmd-head">who served this deck?</div>
 <pre><span class="k">palette-skill health</span>                                <span class="c"># what the client resolved</span>
-<span class="k">grep</span> &lt;thread-id&gt; ~/.local/state/palette/server.log   <span class="c"># present = served locally</span>
+<span class="k">grep</span> -l &lt;thread-id&gt; ~/.local/state/palette/workspace/*/session.log   <span class="c"># a match = served locally</span>
 
 <span class="c"># against a deployment instead — everything else is unchanged</span>
 PALETTE_URL=<span class="s">https://palette.example.cloud</span> <span class="k">palette-skill health</span></pre>
@@ -701,7 +701,7 @@ PALETTE_URL=<span class="s">https://palette.example.cloud</span> <span class="k"
 <span class="k">cat</span> cuga_workspace/*/deck/.palette-deck.json
 
 <span class="c"># 2. one session carried both stages</span>
-<span class="k">grep</span> -E <span class="s">"draft_async|build_async"</span> ~/.local/state/palette/server.log | tail -2
+<span class="k">grep</span> -E <span class="s">"draft_async|build_async"</span> ~/.local/state/palette/workspace/*/session.log | tail -2
 
 <span class="c"># 3. it came out of Palette's renderer</span>
 <span class="k">unzip</span> -p cuga_workspace/*/deck/deck.pptx ppt/slides/slide1.xml | grep -c <span class="s">"IBM Plex"</span></pre>

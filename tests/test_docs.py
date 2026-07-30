@@ -411,3 +411,25 @@ class TestHandbookIsServable:
         fragment = HANDBOOK.read_text(encoding="utf-8")
         assert "<!doctype" not in fragment.lower()
         assert "<body>" not in fragment.lower()
+
+
+@pytest.mark.parametrize("doc", DOCS + [REPO_ROOT / "docs" / "skill-handbook.body.html"],
+                         ids=lambda p: p.name)
+def test_no_doc_tells_you_to_grep_the_wrong_log(doc: Path) -> None:
+    """Build events live in per-session logs, not server.log.
+
+    app.py attaches a FileHandler per session; server.log only ever gets
+    startup and shutdown. Every doc used to say
+    `grep draft_async … /server.log`, which reports nothing for a deck that
+    rendered fine — a verification step that lies is worse than none, and this
+    one was load-bearing in four documents at once.
+    """
+    fenced = "\n".join(
+        re.findall(r"```[a-z]*\n(.*?)```", doc.read_text(encoding="utf-8"), re.DOTALL)
+    ) + doc.read_text(encoding="utf-8")
+    for line in fenced.splitlines():
+        if "draft_async" in line or "build_async" in line:
+            assert "server.log" not in line, (
+                f"{doc.name} greps server.log for build events, which never land there: "
+                f"{line.strip()[:90]}"
+            )

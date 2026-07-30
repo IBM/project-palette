@@ -284,7 +284,8 @@ class TestProcessLifecycle:
 
         assert result == {"started": True, "pid": 4242, "mode": "process", "log": str(cfg.log_file)}
         assert cfg.pid_file.read_text() == "4242"
-        assert captured["command"][1:] == ["app.py", "--port", str(cfg.port)]
+        # -u keeps the log live; see TestTheLogIsActuallyLive for why it matters.
+        assert captured["command"][1:] == ["-u", "app.py", "--port", str(cfg.port)]
         assert captured["kwargs"]["start_new_session"] is True, "must outlive the calling shell"
         assert captured["kwargs"]["stdin"] is subprocess.DEVNULL, "must not hold the caller's stdin"
         assert captured["kwargs"]["cwd"] == str(cfg.home)
@@ -674,3 +675,39 @@ class TestPlanApproval:
         with pytest.raises(PaletteError, match="not a usable plan"):
             self._advance(pal, tmp_path)
         assert pal.built == []
+
+
+class TestTheLogIsActuallyLive:
+    """The server log is a verification tool, so it cannot lag the server.
+
+    Every doc tells you to confirm a build started with
+    `grep draft_async ~/.local/state/palette/server.log`. The server's stdout
+    is a file in all three modes, and Python block-buffers when stdout is not
+    a tty -- so that grep once reported nothing for a deck that had rendered
+    perfectly well, the line still sitting in an 8 KB buffer. A verification
+    step that silently lies is worse than no verification step.
+    """
+
+    def test_child_env_disables_buffering(self, cfg: service.ServiceConfig) -> None:
+        assert cfg.child_env()["PYTHONUNBUFFERED"] == "1"
+
+    def test_process_mode_also_passes_dash_u(
+        self, cfg: service.ServiceConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Belt and braces: -u cannot be undone by an inherited environment."""
+        captured: dict = {}
+
+        class _Proc:
+            pid = 4242
+
+        def _popen(args, **kwargs):
+            captured["args"] = args
+            captured["env"] = kwargs.get("env") or {}
+            return _Proc()
+
+        monkeypatch.setattr(service.subprocess, "Popen", _popen)
+        monkeypatch.setattr(service, "running_pid", lambda _cfg: None)
+        service.start_process(cfg)
+
+        assert "-u" in captured["args"], f"server started buffered: {captured['args']}"
+        assert captured["env"].get("PYTHONUNBUFFERED") == "1"

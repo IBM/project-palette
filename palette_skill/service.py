@@ -155,6 +155,13 @@ class ServiceConfig:
         merged.update(self.env)
         merged["PALETTE_WORKSPACE"] = str(self.workspace)
         merged["PORT"] = str(self.port)
+        # The server's stdout is a log file in every mode, and Python
+        # block-buffers when stdout is not a tty. Without this the log sits
+        # hours behind the running server -- which matters because the log is
+        # how anyone checks whether a build actually started. Seen in the
+        # wild: a deck rendered fine and `grep draft_async server.log` showed
+        # nothing, because the line was still in an 8 KB buffer.
+        merged["PYTHONUNBUFFERED"] = "1"
         return merged
 
 
@@ -402,7 +409,7 @@ def start_process(cfg: ServiceConfig) -> dict[str, Any]:
     log_handle = cfg.log_file.open("ab")
     try:
         process = subprocess.Popen(
-            [sys.executable, "app.py", "--port", str(cfg.port)],
+            [sys.executable, "-u", "app.py", "--port", str(cfg.port)],
             cwd=str(home),
             env=cfg.child_env(),
             stdout=log_handle,

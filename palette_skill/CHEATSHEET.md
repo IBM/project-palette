@@ -41,12 +41,19 @@ Four to twelve minutes, mostly polling. Verify from your own shell (§6):
 cd $CUGA
 ls -l cuga_workspace/*/deck/
 cat  cuga_workspace/*/deck/.palette-deck.json          # want "stage": "done"
-grep -E "draft_async|build_async" ~/.local/state/palette/server.log | tail -2
+grep -E "draft_async|build_async" ~/.local/state/palette/workspace/*/session.log | tail -2
 open cuga_workspace/*/deck/deck.pptx
 ```
 
 **One thread id across both log lines** means one healthy session. Several
 draft ids with no build is the classic failure.
+
+> Note the path: **`workspace/*/session.log`**, not `server.log`. Palette logs
+> build events per session ([app.py](../app.py) installs a file handler when a
+> session is created); `server.log` gets startup and shutdown only. Grepping
+> `server.log` reports nothing for a deck that rendered perfectly well — which
+> is precisely the kind of confident-and-wrong answer the rest of this page
+> exists to avoid.
 
 **First time on this machine?** `make install` handles the Python and Node
 packages, but not the system tools Palette's renderer needs — Node itself,
@@ -277,7 +284,7 @@ reason about it; ask the log:
 
 ```bash
 palette-skill health                                       # what it resolved
-grep <thread-id> ~/.local/state/palette/server.log         # who served it
+grep -l <thread-id> ~/.local/state/palette/workspace/*/session.log   # who served it
 ```
 
 The thread id is in `<dest>/.palette-deck.json`. Present in that log = served
@@ -356,7 +363,7 @@ Three independent signals, in increasing strength:
 cat cuga_workspace/*/deck/.palette-deck.json
 
 # 2. one session carried both stages — several draft ids with no build is the classic failure
-grep -E "draft_async|build_async" ~/.local/state/palette/server.log | tail -2
+grep -E "draft_async|build_async" ~/.local/state/palette/workspace/*/session.log | tail -2
 
 # 3. it came out of Palette's renderer (IBM Plex is forced there, and nowhere else)
 unzip -p cuga_workspace/*/deck/deck.pptx ppt/slides/slide1.xml | grep -c "IBM Plex"
@@ -400,7 +407,7 @@ pytest partway and it looks like a failure that never happened.
 | `pytest: command not found` | installed `.[server]`, which has no test deps | `uv pip install -e '.[dev]'` |
 | Installed skill has an empty `vendor/` | ran the installer from the installed package, not the checkout | `cd $PAL && .venv/bin/python -m palette_skill.install --host …` |
 | Claude Code polls at 25s, not 240s | stale skill, or rendered for the wrong host | reinstall with `--host claude-code` |
-| Unsure which server served a deck | — | `grep <thread-id> ~/.local/state/palette/server.log` |
+| Unsure which server served a deck | — | `grep -l <thread-id> ~/.local/state/palette/workspace/*/session.log` |
 | `no matches found: cuga_workspace/*/...` | you are already inside `cuga_workspace` | drop the prefix: `*/deck/` |
 | Agent reports `deck/deck.pptx` and you cannot find it | stale skill — the relative path predates `pptx_path` | `make skill-install CUGA=$CUGA` |
 | Agent drives `start-draft` / `wait-draft` separately | stale skill; `deck` supersedes those | `make skill-install CUGA=$CUGA` |
@@ -420,7 +427,8 @@ pytest partway and it looks like a failure that never happened.
 | `$CUGA/.cuga/skills/palette/` | the installed skill the agent reads |
 | `$CUGA/cuga_workspace/<thread>/deck/` | the agent's copy — pptx, previews, plan, state |
 | `~/.local/state/palette/workspace/<tid>/` | the server's copy — also `deck.pdf`, `deck.json`, `output_js/` |
-| `~/.local/state/palette/server.log` | ground truth for what actually ran |
+| `~/.local/state/palette/workspace/<tid>/session.log` | **ground truth for what actually ran** — per session, not global |
+| `~/.local/state/palette/server.log` | startup and shutdown only; build events are *not* here |
 | `~/.config/palette/env` | `RITS_API_KEY`; survives every reset level |
 | `$PAL/dist/` | release artifacts |
 

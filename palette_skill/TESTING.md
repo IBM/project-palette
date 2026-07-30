@@ -372,7 +372,7 @@ The client resolves `$PALETTE_URL`, then `contract.DEFAULT_BASE_URL`, which is
 the server log answers it:
 
 ```bash
-grep <thread-id> ~/.local/state/palette/server.log
+grep -l <thread-id> ~/.local/state/palette/workspace/*/session.log
 ```
 
 A thread id that appears there was served locally. One that does not went
