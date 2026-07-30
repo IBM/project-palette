@@ -72,12 +72,14 @@ def chat(spec: config.ModelSpec, messages: list[dict], *,
                 "PALETTE_CE_BASE_URL redirects this model to the CE endpoint.")
         url = f"{spec.base_url.rstrip('/')}/chat/completions"
         headers = {"Authorization": f"Bearer {api_key}"}
+        backend = "CE-FLEET"
     else:
         api_key = os.environ.get("RITS_API_KEY")
         if not api_key:
             raise RuntimeError("RITS_API_KEY is not set — export it before running.")
         url = f"{config.RITS_BASE_URL}/{spec.slug}/v1/chat/completions"
         headers = {"RITS_API_KEY": api_key}
+        backend = "RITS"
     payload = {
         "model": spec.payload_model,
         "messages": messages,
@@ -86,8 +88,8 @@ def chat(spec: config.ModelSpec, messages: list[dict], *,
     }
 
     t0 = time.time()
-    log.info("-> %s (%d msgs, max_tokens=%d)",
-             spec.slug, len(messages), payload["max_tokens"])
+    log.info("-> [%s] %s (%d msgs, max_tokens=%d) url=%s",
+             backend, spec.slug, len(messages), payload["max_tokens"], url)
     _last_user = next((m.get("content") for m in reversed(messages)
                        if m.get("role") == "user"), "") or ""
     _body_log.info("--- request %s ---\n%s", spec.slug,
@@ -99,7 +101,8 @@ def chat(spec: config.ModelSpec, messages: list[dict], *,
     msg = data["choices"][0]["message"]
     usage = data.get("usage") or {}
     finish = data["choices"][0].get("finish_reason")
-    log.info("<- %s %.1fs %d+%d tok finish=%s", spec.slug, time.time() - t0,
+    log.info("<- [%s] %s %.1fs %d+%d tok finish=%s", backend, spec.slug,
+             time.time() - t0,
              usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
              finish)
     if finish == "length":

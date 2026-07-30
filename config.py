@@ -119,6 +119,14 @@ PALETTE_ADAPTER = ModelSpec(
 # The OLD fine-tuned palette adapter on gpt-oss-20b base. Kept as a UI option
 # for side-by-side comparisons during the v3_qwen25 migration; the LoRA-on-
 # gpt-oss endpoint is still running on RITS in parallel with the new one.
+# Loud, unmissable startup banner when the CE redirect is active — so a log
+# file's first lines settle "was this run on CE or RITS" at a glance.
+if PALETTE_ADAPTER.base_url:
+    import logging as _logging
+    _logging.getLogger("config").warning(
+        "=== designer/coder -> SELF-HOSTED CODE ENGINE FLEET: %s (model=%s) — NOT RITS ===",
+        PALETTE_ADAPTER.base_url, PALETTE_ADAPTER.payload_model)
+
 PALETTE_ADAPTER_GPT = ModelSpec(
     "gpt-oss-20b-palette-lora",
     "palette-gpt-20b",
