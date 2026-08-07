@@ -20,6 +20,7 @@ from harness_prompts import (
     CRAFTER_SYSTEM_PROMPT,
     TRANSCRIBE_SYSTEM_PROMPT,
     build_crafter_user_message,
+    build_plan_edit_user_message,
     build_transcribe_user_message,
 )
 
@@ -397,4 +398,26 @@ def craft_plan(request: str, source_paths: list[Path] | None = None) -> str:
     log.info("crafted plan (%s): %d chars, %d slide section(s)",
              "transcribe" if transcribe else "research",
              len(plan), plan.count("\n## "))
+    return plan
+
+
+def edit_plan(plan_md: str, instruction: str) -> str:
+    """Apply a change instruction to an existing plan.md, returning the FULL
+    revised plan. Reuses the crafter system prompt (same format + faithfulness
+    rules); only the user-message framing differs -- see
+    build_plan_edit_user_message. Surgical: apply only the requested change,
+    preserve the rest, invent nothing beyond the plan and the instruction."""
+    if not plan_md or not plan_md.strip():
+        raise ValueError("plan is empty")
+    if not instruction or not instruction.strip():
+        raise ValueError("instruction is empty")
+    messages = [
+        {"role": "system", "content": CRAFTER_SYSTEM_PROMPT},
+        {"role": "user", "content": build_plan_edit_user_message(
+            plan_md, instruction)},
+    ]
+    content, _ = llm.chat(config.ROSTER["crafter"], messages)
+    plan = _normalize_ascii(_strip_fence(content))
+    log.info("edited plan: %d -> %d chars, %d slide section(s), instruction=%r",
+             len(plan_md), len(plan), plan.count("\n## "), instruction[:80])
     return plan
