@@ -118,6 +118,38 @@ Open the URL. You should see the Palette UI — a chat composer on the left, a d
 
 ---
 
+## Using Palette without the UI (CLI / import)
+
+`palette.py` exposes the same pipeline as importable functions and a CLI, so an
+agent or script can drive Palette without running the server. The web UI above
+is unaffected. Three commands, used as a loop — **build a plan → confirm →
+edit → build the deck**:
+
+```bash
+# 1. plan from a request  (add --context "<pasted material>" to ground it)
+python palette.py build-plan "Build me a 5-slide deck on RAG" --out plan.md
+
+# 2. revise the plan  (repeat as needed)
+python palette.py edit-plan "Make it 3 slides and use a casual tone" --plan plan.md --out plan.md
+
+# 3. render the deck  -> writes deck.pptx into the out dir and prints its path
+python palette.py build-deck --plan plan.md --out-dir ./my_deck
+```
+
+Add `--json` to any command for a `{"ok": true, ...}` envelope. Or import directly:
+
+```python
+from palette import build_plan, edit_plan, build_deck
+plan = build_plan("Build me a 5-slide deck on RAG")
+plan = edit_plan(plan, "Make it 3 slides and use a casual tone")
+result = build_deck(plan, out_dir="./my_deck")   # {"deck", "pptx", "previews", ...}
+```
+
+For agent / skill integration, `SKILL.md` documents the commands and the
+confirm-before-build workflow.
+
+---
+
 ## Running in a container (optional)
 
 If you'd rather not install Python / Node / LibreOffice on your machine:
