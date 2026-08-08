@@ -598,6 +598,34 @@ def build_crafter_user_message(request: str, source_texts: list[tuple[str, str]]
     return "\n\n".join(parts)
 
 
+def build_plan_edit_user_message(plan_md: str, instruction: str) -> str:
+    """Frame a plan revision: an existing plan.md + a change request -> the full
+    revised plan.md. Reuses CRAFTER_SYSTEM_PROMPT (same format + faithfulness
+    rules); the existing plan is its own format exemplar, so no exemplars are
+    attached. The edit is surgical — apply only the requested change, preserve
+    everything else, invent no facts beyond the plan and this instruction."""
+    return (
+        "You are REVISING an existing plan.md, not writing a new one. Apply "
+        "ONLY the change described in the CHANGE REQUEST. Preserve everything "
+        "else exactly as written. Keep the same markdown format. Return the "
+        "COMPLETE revised plan.md (not a diff, not a fragment). Invent no facts "
+        "beyond what the existing plan and the change request state. If the "
+        "change affects slide count, length, or a value referenced elsewhere, "
+        "update any inline directives (e.g. [[under N slides]]), the "
+        "Preferences block, AND any other line that references the changed "
+        "value (such as a cover subtitle summarizing the deck's topics) so the "
+        "whole plan stays internally consistent. Update ONLY references to what "
+        "the change touches -- do not otherwise alter content the change does "
+        "not affect.\n\n"
+        "EXISTING PLAN\n"
+        f"{plan_md.rstrip()}\n\n"
+        "CHANGE REQUEST\n"
+        f"{instruction.strip()}\n\n"
+        "Now emit the complete revised plan.md — markdown only, no fence, no "
+        "commentary."
+    )
+
+
 # ===========================================================================
 # Stage 3 — CRITIC : rendered slide image -> visual defects (Qwen-VL)
 # ===========================================================================
