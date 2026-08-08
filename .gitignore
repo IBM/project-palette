@@ -44,3 +44,5 @@ workspace/
 .env.local
 *.pem
 *.key
+skills/**/__pycache__/
+skills/**/*.pyc

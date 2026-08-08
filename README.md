@@ -257,79 +257,68 @@ test asserts the two lists never diverge.
 
 ## Using Palette from an agent
 
-Palette ships as an **agent skill**: a `SKILL.md` plus a dependency-light HTTP
-client. An agent installs the client, calls the same API the web UI calls, and
-gets back a `.pptx` — no LibreOffice, Node, or fonts on the agent's side.
+Palette ships as an **agent skill**: a folder with a `SKILL.md` and one helper
+script, in the shape [skills.sh](https://skills.sh) installs use. There is no
+package to install and nothing generated — the skill tells an agent which
+`palette.py` commands to run, and the agent runs them.
 
-```bash
-make skill                                  # verify the skill matches this repo
-make skill-install CUGA=~/code/cuga-agent   # install into an agent's skills root
-make skill-status  CUGA=~/code/cuga-agent   # is that copy still current?
-make release                                # shippable artifacts in dist/
+```
+skills/palette/
+├── SKILL.md            what the agent is told
+└── scripts/deck.py     starts a long build detached, so a step limit cannot kill it
 ```
 
-`make release` produces a wheel plus a self-contained tarball per agent host.
-A consumer untars it into their skills root — no Palette checkout, no network,
-no build step. Add `BASE_URL=https://…` to pin a deployment into the artifact.
-
-Then point the agent at a server:
+### Install it
 
 ```bash
-export PALETTE_URL=https://<your-palette-host>
+make skill-install CUGA=../cuga-agent-july25   # a CUGA checkout
+make skill-install-claude                      # ~/.claude/skills/palette
+make skill-package                             # dist/palette-skill.tar.gz
 ```
 
-### With CUGA
+A packaged skill is just the folder — `tar xzf palette-skill.tar.gz -C
+<skills-root>/` and it is installed, the same as `npx skills add`.
 
-CUGA ships a preset that starts a supervisor agent with this skill loaded — a
-*Deck Builder* rather than a generic skills demo. Ask it for a deck and it
-drives one resumable command that owns the session, the plan, the polling and
-the download, and reports completion by stat-ing the files rather than by
-believing anything. That shape exists because an agent driving the underlying
-calls by hand loses the session on a retry and reports a deck it never built.
+### What the agent needs
 
-The agent detects the server on startup and, if it is down, hands the user a
-`palette-skill serve` command rather than trying to start one itself.
-
-**Commands:** [palette_skill/CHEATSHEET.md](palette_skill/CHEATSHEET.md) — §0 is
-the whole loop in six lines, §6 is how to tell a real deck from a reported one.
-**Concepts:** [palette_skill/GUIDE.md](palette_skill/GUIDE.md).
-
-### Why it can't silently drift
-
-The skill is **generated from this repo and verified against it**, never
-hand-written on the agent side:
-
-| Moving part | What keeps it honest |
+| Variable | Why |
 |---|---|
-| Routes | `tests/test_skill_contract.py` walks `app.py`'s decorators. A new or renamed route fails the suite. |
-| Request fields | `BuildReq` / `EditReq` / `draft(...)` are compared field-by-field against `palette_skill/contract.py`. |
-| Model menus | The model table in `SKILL.md` is rendered from `config.py`. Add a model, `make skill-check` goes red. |
-| Example plans | Rendered from `config.USER_FACING_EXAMPLES`, intersected with what is on disk. |
-| Installed copy | `.palette-skill.json` records commit, version, and per-file hashes. `make skill-status` names what moved. |
+| `PALETTE_HOME` | the checkout holding `palette.py`; the skill cannot guess it |
+| `RITS_API_KEY` | every model call. A sandbox only sees what its parent exports |
 
-So the loop is: change Palette → `make skill` tells you if the skill is stale →
-`make skill-install` ships it. Nothing is reconstructed by hand.
+### The workflow the skill enforces
 
-The skill folder is **copied**, not symlinked, on purpose: `Path.rglob` stopped
-following directory symlinks in Python 3.13, so a symlinked skill would be
-discovered on 3.12 and silently vanish on an interpreter upgrade.
+**build-plan → confirm → [edit-plan → confirm] × N → build-deck.** The
+confirmation gate is mandatory: a plan is cheap to change and a rendered deck
+costs minutes, so the agent never builds a plan the user has not approved.
 
-### Background builds
+### Long builds and step limits
 
-A deck takes three to ten minutes; agent sandboxes routinely kill a step after
-30 seconds. `POST /build_async` starts a build and returns immediately, so the
-caller polls `/progress` and reads `/result` across several short steps. The
-blocking `POST /build` is unchanged, and `PaletteClient` feature-detects which
-one a deployment has via `/openapi.json` — so the skill works against an older
-deployment too, just without progress reporting.
+Rendering takes three to ten minutes — longer than some hosts allow a single
+command to run. Claude Code's `Bash` permits ten minutes, so it calls
+`build-deck` directly. CUGA kills a sandbox step at 120 seconds, so the skill
+starts the build detached and polls:
 
-See [`palette_skill/GUIDE.md`](palette_skill/GUIDE.md) for what the skill is and
-how to build it, [`palette_skill/README.md`](palette_skill/README.md) for the client,
-[`palette_skill/payload/SKILL.md`](palette_skill/payload/SKILL.md) for what the
-agent is actually told, and [`palette_skill/TESTING.md`](palette_skill/TESTING.md)
-for how to verify the whole chain end to end.
+```bash
+python skills/palette/scripts/deck.py start  --plan plan.md --out-dir ./deck
+python skills/palette/scripts/deck.py status --out-dir ./deck   # until "done": true
+```
 
----
+`status` reports `done` only when `deck.pptx` is on disk and large enough to be
+real — never because a process exited 0. A build that writes nothing has
+failed, and an agent relaying an exit code would announce a deck that does not
+exist.
+
+### Keeping the skill honest
+
+`tests/test_skill.py` reads `palette.py`'s argparse setup and fails if the
+skill names a command or flag that does not exist. `make hooks` runs it as a
+pre-commit guard whenever `palette.py` or the skill changes — so the two cannot
+drift without someone noticing.
+
+```bash
+make skill-test
+```
 
 ## How it's wired
 
@@ -363,35 +352,13 @@ tests/             Contract tests binding the skill to app.py + config.py
 
 ## Which doc is for what
 
-Palette's own docs are this file. Everything about the **agent skill** lives
-under [`palette_skill/`](palette_skill/), split by what you are trying to do
-rather than by topic — so a command appears in exactly one of them.
-
-| Doc | Read it when | Contains |
-|---|---|---|
-| **this file** | you want to run Palette itself | install, the web UI, config, containers, deployment |
-| [`palette_skill/CHEATSHEET.md`](palette_skill/CHEATSHEET.md) | **you want to do something now** | every runnable command: reset levels, build, release, install, run, verify, and a symptom→fix table |
-| [`palette_skill/GUIDE.md`](palette_skill/GUIDE.md) | you are changing the skill | what a skill *is*, the architecture diagram, what each `make` target produces, when to cut a release |
-| [`palette_skill/TESTING.md`](palette_skill/TESTING.md) | you want to trust it | nine tiers from "no dependencies" to "a real model builds a real deck", and what each failure looks like |
-| [`palette_skill/README.md`](palette_skill/README.md) | you are reading the code | why the client is shaped this way, module-by-module layout |
-| [`palette_skill/payload/SKILL.md`](palette_skill/payload/SKILL.md) | you want to know what the agent is told | the instructions themselves — largely generated, so read it rather than editing the generated regions |
-| [`palette_skill/payload/reference.md`](palette_skill/payload/reference.md) | you are calling the client from Python | full signatures, error types, the CLI surface |
-| [`docs/skill-handbook.html`](docs/skill-handbook.html) | you want the whole picture in one page | build → release → update → consume → verify, with the failure modes that shaped it. A standalone page — open it locally, or serve it as-is. |
-
-The handbook is self-contained — no CDN, no fonts to fetch, no build step — so
-`python -m http.server -d docs` or dropping it on any static host both work.
-It is generated from `docs/skill-handbook.body.html` by `make handbook`; edit
-the fragment, not the page, and a test fails the build if the two diverge.
-
-**Start at the cheatsheet.** §0 is six lines from a working checkout to a deck.
-The others explain *why*; it is the only one that tells you *what to type*.
-
-That split is deliberate. These instructions used to appear in four to seven
-documents each, and they drifted — one described a `make` target that had been
-changed an hour earlier. Runnable sequences now live in the cheatsheet alone,
-and a test fails the build if another doc grows one.
-
----
+| Doc | Read it when |
+|---|---|
+| **this file** | you want to run Palette — install, the web UI, config, containers, deployment |
+| [`SKILL.md`](SKILL.md) | you want the agent-facing instructions on their own |
+| [`skills/palette/SKILL.md`](skills/palette/SKILL.md) | you are looking at what actually ships to a host, including the long-build path |
+| [`skills/palette/scripts/deck.py`](skills/palette/scripts/deck.py) | you need to know how a build survives a step limit |
+| `tests/test_skill.py` | you want to see what keeps the skill and `palette.py` in agreement |
 
 ## License
 

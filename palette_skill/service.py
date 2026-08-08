@@ -43,12 +43,12 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from palette_skill import contract
-from palette_skill.client import PaletteClient, PaletteError
 
 Mode = Literal["process", "container", "launchd"]
 
@@ -60,10 +60,13 @@ DEFAULT_CONTAINER_NAME = "palette"
 CONTAINER_PORT = 8080  # what the Dockerfile EXPOSEs
 
 #: Marker files that identify a Palette checkout.
+#: app.py's own default; every deployment overrides host/port.
+DEFAULT_PORT = 18814
+
 CHECKOUT_MARKERS = ("app.py", "config.py", "pipeline.py")
 
 
-class ServiceError(PaletteError):
+class ServiceError(RuntimeError):
     """Something about the local service is wrong, with an actionable message.
 
     Subclasses PaletteError so one ``except PaletteError`` covers both the
@@ -181,7 +184,7 @@ def resolve_config(
         port
         or env.get("PALETTE_PORT")
         or os.environ.get("PALETTE_PORT")
-        or contract.DEFAULT_PORT
+        or DEFAULT_PORT
     )
     resolved_state = Path(
         state_dir or env.get("PALETTE_STATE_DIR") or os.environ.get("PALETTE_STATE_DIR") or DEFAULT_STATE_DIR
@@ -297,10 +300,17 @@ def launchd_loaded(cfg: ServiceConfig) -> bool:
 
 
 def probe(cfg: ServiceConfig, timeout: float = 3.0) -> dict[str, Any] | None:
-    """One /health call. ``None`` when the server is not answering."""
+    """One /health call. ``None`` when the server is not answering.
+
+    Uses urllib rather than a client library: this module supervises the web
+    UI's server and must import cleanly with nothing installed beyond the
+    stdlib, so `serve doctor` still works on a machine that cannot yet run
+    Palette at all.
+    """
     try:
-        return PaletteClient(cfg.url, timeout=timeout).health()
-    except PaletteError:
+        with urllib.request.urlopen(f"{cfg.url}/health", timeout=timeout) as response:
+            return json.loads(response.read())
+    except (urllib.error.URLError, OSError, ValueError):
         return None
 
 

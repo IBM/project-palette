@@ -7,8 +7,8 @@
 
 .PHONY: help install dev docker-build docker-run clean \
         ce-build ce-push ce-buildpush ce-deploy ce-release \
-        skill skill-build skill-check skill-test skill-install skill-status \
-        skill-uninstall clean-state distclean release hooks handbook handbook-check \
+        skill-test skill-install clean-state distclean hooks \
+        skill-install-claude skill-package \
         serve-init serve-doctor serve-start serve-stop serve-status serve-logs \
         serve-install serve-uninstall
 
@@ -86,69 +86,62 @@ ce-release: ce-buildpush ce-deploy ## Build, push, and deploy in sequence
 # in ~/.config/palette/env, never in the plist or your shell history.
 
 serve-init: ## Write ~/.config/palette/env (add your RITS_API_KEY there)
-	$(PY) -m palette_skill.cli serve init
+	$(PY) -m palette_skill.serve_cli init
 
 serve-doctor: ## Check what a local build needs, per mode
-	$(PY) -m palette_skill.cli serve doctor
+	$(PY) -m palette_skill.serve_cli doctor
 
 serve-start: ## Start the service and wait until it answers /health
-	$(PY) -m palette_skill.cli serve ensure
+	$(PY) -m palette_skill.serve_cli ensure
 
 serve-stop: ## Stop the service (process and container)
-	$(PY) -m palette_skill.cli serve stop
+	$(PY) -m palette_skill.serve_cli stop
 
 serve-status: ## Is it up, in which mode, with which workspace
-	$(PY) -m palette_skill.cli serve status
+	$(PY) -m palette_skill.serve_cli status
 
 serve-logs: ## Tail the service log
-	$(PY) -m palette_skill.cli serve logs
+	$(PY) -m palette_skill.serve_cli logs
 
 serve-install: ## Install the launchd agent (starts at login, restarts on crash)
-	$(PY) -m palette_skill.cli serve install
+	$(PY) -m palette_skill.serve_cli install
 
 serve-uninstall: ## Remove the launchd agent
-	$(PY) -m palette_skill.cli serve uninstall
+	$(PY) -m palette_skill.serve_cli uninstall
 
-# --- Agent skill ---
-# Palette is exposed to agents as a skill: a generated SKILL.md plus a
-# dependency-light HTTP client. Both are produced from this repo, never hand-
-# authored on the agent side, so the two cannot drift apart silently.
+# --- Agent skill (skills.sh style: a folder you drop into a skills root) ---
 
-skill-build: ## Regenerate SKILL.md / reference.md from contract.py + config.py
-	$(PY) -m palette_skill.build_skill
+SKILL_SRC := skills/palette
 
-skill-check: ## Fail if the generated skill content is stale
-	$(PY) -m palette_skill.build_skill --check
+skill-install: ## Install the skill into an agent (make skill-install CUGA=<path>)
+	@# A skill is a folder. No build step, no wheel, no generated content --
+	@# copy it where the host scans and it is installed. Same as `npx skills add`.
+	@test -f $(SKILL_SRC)/SKILL.md || { echo "missing $(SKILL_SRC)/SKILL.md"; exit 1; }
+	@mkdir -p $(CUGA)/.cuga/skills
+	@find $(SKILL_SRC) -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+	@rm -rf $(CUGA)/.cuga/skills/palette
+	@cp -R $(SKILL_SRC) $(CUGA)/.cuga/skills/palette
+	@echo "installed -> $(CUGA)/.cuga/skills/palette"
+	@echo "the skill runs palette.py from \$$PALETTE_HOME; export it to $(PWD)"
 
-skill-test: ## Assert the skill still matches app.py and config.py
-	$(PY) -m pytest tests/ -q
+skill-install-claude: ## Install into Claude Code (~/.claude/skills/palette)
+	@mkdir -p $(HOME)/.claude/skills
+	@find $(SKILL_SRC) -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+	@rm -rf $(HOME)/.claude/skills/palette
+	@cp -R $(SKILL_SRC) $(HOME)/.claude/skills/palette
+	@echo "installed -> $(HOME)/.claude/skills/palette"
 
-skill-install: skill-build ## Install the skill into an agent (make skill-install CUGA=<path>)
-	$(PY) -m palette_skill.install --into $(CUGA)
+skill-package: ## Package the skill as dist/palette-skill.tar.gz (droppable into any skills root)
+	@mkdir -p dist
+	@find skills -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+	@tar czf dist/palette-skill.tar.gz --exclude __pycache__ --exclude '*.pyc' -C skills palette
+	@echo "dist/palette-skill.tar.gz  ($$(du -h dist/palette-skill.tar.gz | cut -f1))"
+	@echo "consume:  tar xzf palette-skill.tar.gz -C <skills-root>/"
 
-skill-status: ## Report drift between this repo and an installed skill
-	$(PY) -m palette_skill.install --into $(CUGA) --check
+skill-test: ## Check the skill is self-consistent (no server, no network)
+	$(PY) -m pytest tests/test_skill.py -q
 
-skill-uninstall: ## Remove an installed skill (HOST=cuga|claude-code, CUGA=<path>)
-	$(PY) -m palette_skill.install --uninstall --host $(HOST) --into $(CUGA)
 
-release: skill ## Build artifacts into dist/. VERSION=X.Y.Z cuts a real release.
-	@# No VERSION: a throwaway local build, overwrites freely — the dev loop.
-	@# With VERSION: writes __version__, demands a clean tree, and refuses to
-	@# reuse a version already in dist/. The version is in every artifact's
-	@# filename, so two releases sharing one are indistinguishable to whoever
-	@# you hand them to.
-	$(PY) -m palette_skill.release \
-	  $(if $(VERSION),--version $(VERSION),) \
-	  $(if $(BASE_URL),--base-url $(BASE_URL),)
-
-skill: skill-check skill-test ## Verify the skill is current and correct
-
-handbook: ## Rebuild docs/skill-handbook.html from its fragment source
-	$(PY) scripts/build-handbook.py
-
-handbook-check: ## Fail if the servable handbook is stale
-	$(PY) scripts/build-handbook.py --check
 
 hooks: ## Install the pre-commit guard (blocks commits that leave the skill stale)
 	@mkdir -p .git/hooks
@@ -162,7 +155,7 @@ clean: ## Remove pycache + workspace artifacts (preserves source)
 	rm -rf workspace
 
 clean-state: ## Stop the service and delete its state (workspace, logs, pid)
-	-$(PY) -m palette_skill.cli serve stop >/dev/null 2>&1 || true
+	-$(PY) -m palette_skill.serve_cli stop >/dev/null 2>&1 || true
 	rm -rf $(STATE_DIR)
 	@echo "removed $(STATE_DIR)"
 
