@@ -96,6 +96,17 @@ python skills/palette/scripts/deck.py status --out-dir ./deck    # repeat until 
 While it runs you get `"state": "running"` with a `progress` line — report that
 to the user in the same turn as the next `status` call, never on its own.
 
+`status` also returns `elapsed_seconds`. **Past about fifteen minutes, say so
+rather than polling on in silence.** A build that cannot reach the models
+retries every stage before giving up — measured at 51 minutes to fail with
+nothing but connection timeouts in the log — and to a poller that is
+indistinguishable from a slow render. Tell the user it has run long, and offer
+the log:
+
+```bash
+tail -20 ./deck/build.log
+```
+
 Both paths write `deck.pptx`, `deck.json` and slide preview PNGs into the
 output directory, and both accept `--palette-family <style>` for a specific
 visual style (default `ibm_watsonx`). Only pass it if the user asks.

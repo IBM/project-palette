@@ -158,6 +158,17 @@ class TestLongBuildsSurviveAStepLimit:
     def test_the_skill_forbids_reporting_an_unverified_deck(self) -> None:
         assert "Never report a deck that does not exist" in skill_text()
 
+    def test_the_agent_is_told_when_a_build_has_run_too_long(self) -> None:
+        """An unreachable endpoint looks exactly like a slow render to a poller.
+
+        Palette retries every stage before giving up — measured at 51 minutes
+        to fail with nothing but connection timeouts. Without a ceiling the
+        agent polls in silence for the whole of it.
+        """
+        text = skill_text()
+        assert "elapsed_seconds" in text
+        assert "build.log" in text, "the agent is never told where the reason is written"
+
     def test_deck_helper_runs_and_is_stdlib_only(self) -> None:
         """It ships into whatever environment the agent has; imports must be safe."""
         result = subprocess.run(
