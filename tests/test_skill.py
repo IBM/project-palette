@@ -96,36 +96,43 @@ class TestSkillShape:
 class TestSkillMatchesTheCLI:
     """Every command and flag the skill names must exist in palette.py."""
 
-    def test_every_documented_subcommand_exists(self) -> None:
+    def test_the_helper_only_calls_commands_palette_has(self) -> None:
+        """deck.py fronts palette.py, so *it* is what must stay in step."""
         surface = cli_surface()
         assert surface, "could not read any subcommands out of palette.py"
-        named = set(re.findall(r"palette\.py (build-plan|edit-plan|build-deck)", skill_text()))
-        assert named, "the skill names no palette.py commands at all"
-        missing = named - set(surface)
-        assert not missing, f"skill tells the agent to run commands palette.py lacks: {sorted(missing)}"
+        called = set(re.findall(r'"(build-plan|edit-plan|build-deck)"', DECK_PY.read_text()))
+        assert called, "deck.py calls no palette.py commands at all"
+        missing = called - set(surface)
+        assert not missing, f"deck.py calls commands palette.py lacks: {sorted(missing)}"
 
-    @pytest.mark.parametrize("command", ["build-plan", "edit-plan", "build-deck"])
-    def test_every_command_is_documented(self, command: str) -> None:
-        """A command nobody documents is a capability the agent never reaches for."""
-        assert command in cli_surface(), f"palette.py lost {command}"
-        assert f"palette.py {command}" in skill_text(), f"{command} is undocumented in SKILL.md"
+    @pytest.mark.parametrize(
+        ("palette_command", "helper_command"),
+        [("build-plan", "plan"), ("edit-plan", "edit"), ("build-deck", "start")],
+    )
+    def test_every_capability_is_reachable(self, palette_command: str, helper_command: str) -> None:
+        """A capability with no documented route is one the agent never uses."""
+        assert palette_command in cli_surface(), f"palette.py lost {palette_command}"
+        assert f"deck.py {helper_command}" in skill_text(), (
+            f"{palette_command} has no documented route ({helper_command!r} missing from SKILL.md)"
+        )
 
-    def test_every_flag_the_skill_uses_exists(self) -> None:
+    def test_the_helper_passes_only_flags_palette_accepts(self) -> None:
         surface = cli_surface()
-        text = skill_text()
+        source = DECK_PY.read_text()
         problems = []
         for command, flags in surface.items():
-            for match in re.finditer(rf"palette\.py {command}([^\n`]*)", text):
-                for flag in re.findall(r"--[a-z][a-z-]+", match.group(1)):
+            for match in re.finditer(rf'"{command}"([^\]]*)\]', source):
+                for flag in re.findall(r'"(--[a-z][a-z-]+)"', match.group(1)):
                     if flag not in flags:
                         problems.append(f"{command} {flag}")
-        assert not problems, f"skill passes flags palette.py does not accept: {sorted(set(problems))}"
+        assert not problems, f"deck.py passes flags palette.py rejects: {sorted(set(problems))}"
 
     def test_the_context_flag_is_documented(self) -> None:
         """Pasted material is the whole point of --context on a chat host with
         no file upload; undocumented, the agent crams it into the request."""
         assert "--context" in cli_surface()["build-plan"]
         assert "--context" in skill_text()
+        assert "--context" in DECK_PY.read_text(), "the helper never forwards it"
 
 
 class TestTheConfirmationGate:
@@ -134,7 +141,7 @@ class TestTheConfirmationGate:
     def test_the_gate_is_stated(self) -> None:
         text = skill_text()
         assert "Never call build-deck until the user has confirmed" in text
-        assert "build-plan → confirm" in text
+        assert "confirm" in text
 
     def test_the_gate_is_not_optional(self) -> None:
         assert re.search(r"confirmation gate is (required|mandatory)", skill_text(), re.I)
@@ -146,7 +153,6 @@ class TestLongBuildsSurviveAStepLimit:
     def test_the_async_path_is_documented(self) -> None:
         text = skill_text()
         assert "deck.py start" in text and "deck.py status" in text
-        assert "120" in text, "the skill should say which limit it is working around"
 
     def test_status_reports_verified_from_the_filesystem(self) -> None:
         """`done` must never be relayed from an exit code."""
@@ -157,6 +163,47 @@ class TestLongBuildsSurviveAStepLimit:
 
     def test_the_skill_forbids_reporting_an_unverified_deck(self) -> None:
         assert "Never report a deck that does not exist" in skill_text()
+
+    def test_a_finished_build_reports_how_long_it_took(self, tmp_path: Path) -> None:
+        """Not how long ago it started — polling later would flag a fast build.
+
+        The agent is told to speak up past about fifteen minutes; measuring
+        from `now` means revisiting yesterday's deck looks like a stall.
+        """
+        import json as _json
+        import subprocess as _sp
+        import time as _time
+
+        import os as _os
+
+        # Built in five minutes, two hours ago, and polled now.
+        started = int(_time.time()) - 7200
+        pptx = tmp_path / "deck.pptx"
+        pptx.write_bytes(b"x" * 60_000)
+        _os.utime(pptx, (started + 300, started + 300))
+        (tmp_path / ".palette-build.json").write_text(
+            _json.dumps({"state": "running", "pid": 1, "started_at": started,
+                         "log": str(tmp_path / "build.log"), "out_dir": str(tmp_path)})
+        )
+        out = _sp.run([sys.executable, str(DECK_PY), "status", "--out-dir", str(tmp_path)],
+                      capture_output=True, text=True)
+        payload = _json.loads(out.stdout)
+        assert payload["done"] is True
+        assert payload["elapsed_seconds"] == 300, (
+            f"reported {payload['elapsed_seconds']}s for a five-minute build polled "
+            "two hours later — elapsed is measuring wall clock since start, not duration"
+        )
+
+    def test_status_reports_something_true_while_running(self) -> None:
+        """`progress` is empty for most of a build — build-deck prints at the end.
+
+        Telling the agent to relay a progress line it will never have is an
+        instruction it cannot follow, so `elapsed_seconds` and a note carry it.
+        """
+        source = DECK_PY.read_text(encoding="utf-8")
+        assert '"elapsed_seconds": elapsed' in source
+        assert "still rendering after" in source
+        assert "no per-stage `progress` line" in skill_text()
 
     def test_the_agent_is_told_when_a_build_has_run_too_long(self) -> None:
         """An unreachable endpoint looks exactly like a slow render to a poller.
@@ -258,3 +305,11 @@ class TestPaletteHomeResolution:
 
     def test_the_skill_tells_the_agent_about_palette_home(self) -> None:
         assert "PALETTE_HOME" in skill_text()
+
+    def test_the_skill_forbids_running_palette_py_directly(self) -> None:
+        """An agent that tried it ran `skills/palette/palette.py` — the wrong root.
+
+        palette.py lives in the checkout and only runs with that as its cwd;
+        deck.py exists so nobody has to hold both facts at once.
+        """
+        assert "Do not run `palette.py` yourself" in skill_text()

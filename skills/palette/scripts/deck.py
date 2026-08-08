@@ -94,6 +94,57 @@ def _alive(pid: int) -> bool:
     return True
 
 
+def _run_palette(home: Path, argv: list[str]) -> subprocess.CompletedProcess:
+    """Run palette.py from the checkout, whatever the caller's cwd is.
+
+    palette.py imports config/pipeline by relative import, so it only runs with
+    cwd set to the checkout — but the agent's cwd is its own workspace, and
+    that is where output has to land. Getting this wrong is not hypothetical:
+    an agent told to `cd $PALETTE_HOME` and then run `palette.py` instead ran
+    `skills/palette/palette.py`, mixing the skill folder with the checkout.
+    So no caller ever has to think about it: paths in, paths out, cwd handled.
+    """
+    return subprocess.run(
+        [interpreter(home), "-u", "palette.py", *argv],
+        cwd=str(home), capture_output=True, text=True,
+    )
+
+
+def _relay(result: subprocess.CompletedProcess) -> int:
+    """palette.py's own stdout/stderr, verbatim. Its error text is the reason."""
+    if result.stdout:
+        print(result.stdout.rstrip())
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "").strip().splitlines()
+        print(json.dumps({"ok": False, "error": message[-1] if message else "failed"}))
+    return result.returncode
+
+
+def plan(args: argparse.Namespace) -> int:
+    """build-plan, with --out resolved against *your* cwd rather than the checkout."""
+    home = palette_home()
+    out = Path(args.out).expanduser().resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    argv = ["build-plan", args.request, "--out", str(out)]
+    if args.context:
+        argv += ["--context", args.context]
+    for source in args.source or []:
+        argv += ["--source", str(Path(source).expanduser().resolve())]
+    return _relay(_run_palette(home, argv))
+
+
+def edit(args: argparse.Namespace) -> int:
+    """edit-plan, reading and writing the same file by absolute path."""
+    home = palette_home()
+    plan_path = Path(args.plan).expanduser().resolve()
+    if not plan_path.is_file():
+        raise SystemExit(f"error: no plan at {plan_path}")
+    out = Path(args.out).expanduser().resolve() if args.out else plan_path
+    return _relay(_run_palette(
+        home, ["edit-plan", args.instruction, "--plan", str(plan_path), "--out", str(out)]
+    ))
+
+
 def start(args: argparse.Namespace) -> int:
     home = palette_home()
     out_dir = Path(args.out_dir).expanduser().resolve()
@@ -161,13 +212,25 @@ def status(args: argparse.Namespace) -> int:
     elapsed = int(time.time()) - int(state.get("started_at", time.time()))
 
     if checked["verified"]:
-        result = {"state": "done", "done": True, **checked, "elapsed_seconds": elapsed}
+        # How long the build *took*, not how long ago it started. Polling an
+        # hour later would otherwise report an hour, and the agent is told to
+        # flag a long build -- it would flag a fast one it happened to revisit.
+        finished = Path(checked["pptx"]).stat().st_mtime
+        took = max(0, int(finished) - int(state.get("started_at", finished)))
+        result = {"state": "done", "done": True, **checked, "elapsed_seconds": took}
     elif running:
+        # `build-deck` prints only when it finishes -- the pipeline's own stage
+        # logging goes to a per-session file, not to stdout -- so the log is
+        # empty for most of a run. Report elapsed time, which is always true,
+        # rather than an empty string the agent is told to relay.
         result = {
             "state": "running", "done": False, "elapsed_seconds": elapsed,
-            "progress": _tail(Path(state["log"]), 1),
+            "note": f"still rendering after {elapsed}s of a typical 180-600s build",
             "next": f"python {Path(__file__).name} status --out-dir {out_dir}",
         }
+        latest = _tail(Path(state["log"]), 1)
+        if latest:
+            result["progress"] = latest
     else:
         # Process gone and no usable .pptx: surface the log, because the reason
         # is in it and the agent cannot see the detached process's output.
@@ -196,6 +259,19 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    pl = sub.add_parser("plan", help="request -> markdown plan (blocks ~40s)")
+    pl.add_argument("--request", required=True, help="the user's request, passed through as-is")
+    pl.add_argument("--context", default=None, help="material the user pasted, to ground the plan")
+    pl.add_argument("--source", action="append", help="grounding file on disk (repeatable)")
+    pl.add_argument("--out", required=True, help="where to write the plan")
+    pl.set_defaults(func=plan)
+
+    ed = sub.add_parser("edit", help="apply a requested change to an existing plan")
+    ed.add_argument("--instruction", required=True, help="the change, passed through as-is")
+    ed.add_argument("--plan", required=True)
+    ed.add_argument("--out", default=None, help="default: overwrite --plan")
+    ed.set_defaults(func=edit)
 
     s = sub.add_parser("start", help="launch build-deck detached and return at once")
     s.add_argument("--plan", required=True, help="path to the approved plan markdown")

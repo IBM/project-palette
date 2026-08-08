@@ -73,19 +73,38 @@ def test_no_doc_still_describes_the_http_skill(doc: Path) -> None:
         assert banned not in text, f"{doc.name} still describes the HTTP skill: {banned!r} ({why})"
 
 
-def test_the_two_skill_files_do_not_contradict_each_other() -> None:
-    """`SKILL.md` at the root and `skills/palette/SKILL.md` are both real.
+def test_the_two_skill_files_agree_on_capability() -> None:
+    """`SKILL.md` at the root and `skills/palette/SKILL.md` serve different readers.
 
-    The root one is the reference copy; the folder is what ships. They may
-    differ in detail — only the packaged one carries the host-specific
-    long-build guidance — but they must not disagree about the commands, or
-    whichever a reader finds first is a coin flip.
+    The root file documents `palette.py` directly — the right thing for a
+    person at a terminal. The packaged one documents `deck.py`, which fronts it
+    so an agent never has to hold "which directory does this run from" in its
+    head; one that tried ran `skills/palette/palette.py` and failed.
+
+    So they differ in commands by design. What they must not differ on is what
+    Palette can *do*, or a reader learns a smaller Palette than exists.
     """
-    root = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
-    shipped = (REPO_ROOT / "skills" / "palette" / "SKILL.md").read_text(encoding="utf-8")
-    for command in ("build-plan", "edit-plan", "build-deck"):
-        assert (f"palette.py {command}" in root) == (f"palette.py {command}" in shipped), (
-            f"the two SKILL.md files disagree about {command!r}"
-        )
+    root = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8").lower()
+    shipped = (REPO_ROOT / "skills" / "palette" / "SKILL.md").read_text(encoding="utf-8").lower()
+
+    for capability in ("plan", "edit", "build", "--context"):
+        assert capability in root, f"root SKILL.md never mentions {capability!r}"
+        assert capability in shipped, f"shipped SKILL.md never mentions {capability!r}"
+
     for text, name in ((root, "SKILL.md"), (shipped, "skills/palette/SKILL.md")):
-        assert "--context" in text, f"{name} omits --context, so pasted material gets mangled"
+        assert "confirm" in text, f"{name} drops the confirmation gate"
+
+
+def test_the_shipped_skill_does_not_send_the_agent_to_palette_py() -> None:
+    """It runs from the checkout, not the skill folder — an agent conflated them.
+
+    `python skills/palette/palette.py ...` is the failure that produced this
+    rule: the skill folder and the checkout are different roots, and the only
+    reliable fix was to stop asking the agent to keep both straight.
+    """
+    shipped = (REPO_ROOT / "skills" / "palette" / "SKILL.md").read_text(encoding="utf-8")
+    assert "Do not run `palette.py` yourself" in shipped
+    assert "python palette.py" not in shipped, (
+        "the shipped skill still shows a bare `python palette.py` command, which "
+        "only works from the checkout"
+    )
