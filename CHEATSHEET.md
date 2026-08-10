@@ -40,13 +40,17 @@ drifting away from the CLI it drives.
 Skips the agent entirely — is it Palette or is it the agent?
 
 ```bash
-python skills/palette/scripts/deck.py plan --request "5 slides on RAG" --out /tmp/p.md
-python skills/palette/scripts/deck.py start  --plan /tmp/p.md --out-dir /tmp/deck
-python skills/palette/scripts/deck.py status --out-dir /tmp/deck    # repeat
+S=skills/palette/scripts/deck.py
+python $S plan --request "5 slides on RAG" --out /tmp/p.md --wait   # blocks 40-180s
+python $S start  --plan /tmp/p.md --out-dir /tmp/deck
+python $S status --out-dir /tmp/deck                                # repeat
 ```
 
-`plan` takes 40-90s. `status` is instant; repeat it until `"done": true`. The
-build takes **3-10 minutes**.
+`--wait` is the convenience for a terminal. **Agents must not use it** — they
+run `plan` bare, which returns at once, and collect it with `plan-status`,
+because a host that cuts a step short turns a working call into a silent
+failure. `status` is instant; repeat until `"done": true`. The build takes
+**3-10 minutes**.
 
 ## 3. Is that deck real?
 
@@ -172,5 +176,6 @@ make install
 | Build runs 15+ min, then fails | No route to RITS — connect the VPN. It retries every stage before giving up; 51 minutes was measured. |
 | `error: $PALETTE_HOME=... has no palette.py` | Pointed at the skill folder rather than the checkout. They are different roots. |
 | Agent says "done", no file on disk | It relayed an exit code. `deck.py status` computes `verified` by stat-ing the file — trust that and nothing else. |
+| `status` says `error` seconds after `start`, and the agent starts theorising about missing dependencies | A pre-fix copy of the skill. It probed liveness with `os.kill`, which CUGA's sandbox denies, so it read every live build as dead. Reinstall — level 2 above. A current `deck.py` waits for `.palette-exit`. |
 | Agent stops mid-build | Prose with no code reads as a finished answer. `demo_palette` sets `cuga_lite_nl_auto_continue=true` to prevent it. |
 | Deck exists but looks generic | Check the IBM Plex grep in §3. Something else may have written it. |

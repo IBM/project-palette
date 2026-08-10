@@ -50,12 +50,15 @@ directory as the working directory — `deck.py` handles that.
 ### 1. Create a plan
 
 ```bash
-python skills/palette/scripts/deck.py plan --request "<the user's request>" --out plan.md
+python skills/palette/scripts/deck.py plan        --request "<the user's request>" --out plan.md
+python skills/palette/scripts/deck.py plan-status --out plan.md      # repeat until done
 ```
 
 - Pass the user's request through **as-is** — do not reformat or restructure it.
-- **Takes 40-90 seconds** — one model call, at the slow end when you pass
-  `--source`. It blocks, so expect the step to sit there; that is not a hang.
+- **`plan` returns immediately.** The model call behind it takes 40-180
+  seconds, which is longer than a step lasts on some hosts, so it runs
+  detached and you collect it with `plan-status` — the same way the deck build
+  works. Keep polling until `"done": true`; the plan text comes back in `text`.
 - If the user pasted **material for the deck** (notes, content, data, an
   excerpt), ground the plan in it with `--context`:
 
@@ -66,18 +69,23 @@ python skills/palette/scripts/deck.py plan --request "<the user's request>" --ou
 
 - Grounding files on disk instead: `--source <path>` (repeatable; `.md .txt
   .pdf .docx .pptx`).
-- Writes the plan to `--out` and prints it.
+- `--wait` blocks instead of detaching. It is there for a person at a terminal;
+  do not use it, because a step cut short mid-call tells you nothing and the
+  plan lands anyway with nobody looking at it.
 
 ### 2. Revise a plan
 
 ```bash
-python skills/palette/scripts/deck.py edit --instruction "<the change>" --plan plan.md
+python skills/palette/scripts/deck.py edit        --instruction "<the change>" --plan plan.md
+python skills/palette/scripts/deck.py plan-status --out plan.md      # repeat until done
 ```
 
 - Use for **any** change: slide count, tone, wording, content, adding or
   removing a slide, changing one specific slide.
 - Pass the requested change through as-is.
-- Overwrites `--plan` unless you pass `--out`.
+- Overwrites `--plan` unless you pass `--out`. Collect it with `plan-status`
+  against whichever file it is writing — an edit is the same kind of model
+  call as a plan, and detaches for the same reason.
 
 ### 3. Build the deck
 
@@ -120,24 +128,41 @@ tail -20 ./deck/build.log
 `start` accepts `--palette-family <style>` for a specific visual style
 (default `ibm_watsonx`). Only pass it if the user asks.
 
+## Nothing here blocks — everything is start-then-poll
+
+Both slow commands return at once and are collected by polling. That is not a
+style choice: a step that gets cut short mid-call tells you *nothing* about
+whether the work succeeded, while the work itself carries on and finishes with
+nobody collecting it. Every failure this skill has had in the wild was some
+version of that.
+
+| You run | You collect with |
+|---|---|
+| `plan` / `edit` | `plan-status --out <plan>` |
+| `start` | `status --out-dir <dir>` |
+
+**A timeout, an error, or a killed step is never evidence of failure.** Poll
+again. The answer is on disk, not in the exit code.
+
 ## Workflow
 
-The loop is **build-plan → confirm → [edit-plan → confirm] × N → build-deck**.
+The loop is **plan → confirm → [edit → confirm] × N → build**.
 
-1. **User asks for a deck** → run **build-plan** with their request (add
-   `--context` if they pasted material). Save the plan.
+1. **User asks for a deck** → run **plan** with their request (add `--context`
+   if they pasted material), then poll `plan-status` until it is done.
 2. **Confirmation gate (required).** Present the plan and explicitly ask them to
    confirm before anything is built:
 
    > Here is the plan for your deck. Does this look right? Reply **yes** to
    > build the deck, or tell me what you'd like to change.
 
-   **Never call build-deck until the user has confirmed this plan.**
+   **Never start a build until the user has confirmed this plan.**
 3. **Branch on the reply:**
-   - **Confirms** ("yes", "looks good", "go ahead", "build it") → build the
-     deck, then give the user the `.pptx` path.
-   - **Asks for changes** → run **edit-plan** with their instruction, then
-     **return to step 2** — present the revised plan and ask again.
+   - **Confirms** ("yes", "looks good", "go ahead", "build it") → `start` the
+     build, poll `status`, then give the user the `.pptx` path.
+   - **Asks for changes** → run **edit** with their instruction, poll
+     `plan-status`, then **return to step 2** — present the revised plan and
+     ask again.
 4. Repeat until confirmed, then build.
 
 ## Reporting the result

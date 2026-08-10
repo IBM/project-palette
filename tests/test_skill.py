@@ -123,7 +123,11 @@ class TestSkillMatchesTheCLI:
         source = DECK_PY.read_text()
         problems = []
         for command, flags in surface.items():
-            for match in re.finditer(rf'"{command}"([^\]]*)\]', source):
+            # Only an argv list literal -- `["build-deck", ...]`. The command
+            # name also appears as a plain label, and matching that ran on to
+            # the next `]` anywhere in the file, borrowing another command's
+            # flags and reporting a mismatch that did not exist.
+            for match in re.finditer(rf'\["{command}"([^\]]*)\]', source):
                 for flag in re.findall(r'"(--[a-z][a-z-]+)"', match.group(1)):
                     if flag not in flags:
                         problems.append(f"{command} {flag}")
@@ -142,7 +146,7 @@ class TestTheConfirmationGate:
 
     def test_the_gate_is_stated(self) -> None:
         text = skill_text()
-        assert "Never call build-deck until the user has confirmed" in text
+        assert "Never start a build until the user has confirmed" in text
         assert "confirm" in text
 
     def test_the_gate_is_not_optional(self) -> None:
@@ -183,6 +187,7 @@ class TestLongBuildsSurviveAStepLimit:
         pptx = tmp_path / "deck.pptx"
         pptx.write_bytes(b"x" * 60_000)
         _os.utime(pptx, (started + 300, started + 300))
+        (tmp_path / ".palette-exit").write_text("0\n")   # the build ended
         (tmp_path / ".palette-build.json").write_text(
             _json.dumps({"state": "running", "pid": 1, "started_at": started,
                          "log": str(tmp_path / "build.log"), "out_dir": str(tmp_path)})
@@ -335,6 +340,73 @@ class TestDeckHelperBehaviour:
         (tmp_path / "deck.pptx").write_bytes(b"x" * 200_000)
         result = self._status_of(tmp_path, 999_999_999)  # certainly not running
         assert result["state"] == "done" and result["done"] is True
+
+    def test_a_sandbox_that_hides_processes_does_not_fail_a_live_build(
+        self, tmp_path: Path
+    ) -> None:
+        """The bug that broke every CUGA run, and the reason `.palette-exit` exists.
+
+        CUGA runs each step under Seatbelt with `(allow signal (target self))`.
+        `os.kill(pid, 0)` against the detached build therefore raises
+        PermissionError, and `ps` cannot exec at all. Both were being read as
+        "the process is gone", so `status` returned `state: error` on the first
+        poll -- minutes before the .pptx could exist -- and the agent went off
+        and invented missing dependencies to explain a failure that had not
+        happened. Two real sessions ended that way with a perfectly good
+        15-slide deck sitting in the workspace.
+
+        pid 1 stands in for the sandbox: it is alive, and signalling it raises
+        PermissionError for anyone not root. Undetermined must mean "keep
+        waiting", never "it died".
+        """
+        module = self._deck_module()
+        assert os.getuid() != 0, "run this as a normal user; root can signal pid 1"
+        assert module._alive(1) is None, "an undeterminable pid must not read as dead"
+
+        result = self._status_of(tmp_path, 1)   # no .palette-exit, no .pptx yet
+        assert result["state"] == "running", (
+            "a build whose liveness cannot be probed was declared failed"
+        )
+
+    def test_the_exit_file_is_what_ends_the_wait(self, tmp_path: Path) -> None:
+        """Same unprobeable pid, but the build has now recorded that it ended."""
+        (tmp_path / "deck.pptx").write_bytes(b"x" * 200_000)
+        (tmp_path / ".palette-exit").write_text("0\n")
+        result = self._status_of(tmp_path, 1)
+        assert result["state"] == "done" and result["done"] is True
+
+    def test_a_failed_build_reports_its_exit_code(self, tmp_path: Path) -> None:
+        """Ended, nothing usable on disk: that is an error, and the code helps."""
+        (tmp_path / ".palette-exit").write_text("1\n")
+        result = self._status_of(tmp_path, 1)
+        assert result["state"] == "error" and result["exit_code"] == 1
+        assert result["verified"] is False
+
+    def test_the_plan_step_does_not_block(self) -> None:
+        """`plan` returns at once, because the model call outlives a step.
+
+        Measured 43-82s locally and ~170s inside CUGA's sandbox, against a
+        120s step. When the step was cut short the agent reported that Palette
+        had timed out and gave up — while `plan.md`, a perfectly good 72-line
+        plan, was written to the workspace a few seconds later.
+
+        So the plan detaches exactly like the build, and `--wait` exists only
+        for a person at a terminal.
+        """
+        source = DECK_PY.read_text()
+        assert "def plan_status" in source, "no way to collect a detached plan"
+        assert "_start_plan" in source
+        skill = skill_text()
+        assert "deck.py plan-status" in skill, "SKILL.md never tells the agent to collect it"
+        assert "--wait" not in skill.split("## Workflow")[1], (
+            "the workflow tells the agent to block on a call a step limit can cut short"
+        )
+
+    def test_every_slow_command_records_its_exit_code(self) -> None:
+        """Both detached paths must write the sentinel, or polling never ends."""
+        source = DECK_PY.read_text()
+        assert source.count("echo $? >") >= 1, "no exit sentinel is written at all"
+        assert "_detach(" in source, "the detach path is not shared, so one of them will drift"
 
     def test_a_recycled_pid_does_not_poll_forever(self, tmp_path: Path) -> None:
         """Liveness now gates completion, so `_alive` must mean *our* build.
