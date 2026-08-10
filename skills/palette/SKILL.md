@@ -54,7 +54,8 @@ python skills/palette/scripts/deck.py plan --request "<the user's request>" --ou
 ```
 
 - Pass the user's request through **as-is** — do not reformat or restructure it.
-- Takes about 40 seconds; it is one model call.
+- **Takes 40-90 seconds** — one model call, at the slow end when you pass
+  `--source`. It blocks, so expect the step to sit there; that is not a hang.
 - If the user pasted **material for the deck** (notes, content, data, an
   excerpt), ground the plan in it with `--context`:
 
@@ -158,6 +159,10 @@ reasonable its output looked. Rendering can fail after the plan is perfect.
 - **`deck.py status` computes `verified` by stat-ing the file** — it is true
   only when `deck.pptx` exists and is large enough to be real. If you did not
   see `"verified": true`, there is no deck.
+- **A `.pptx` appearing is not the build finishing.** `build-deck` renders,
+  lints the geometry, and re-renders to the same path until the layout
+  settles — often three passes. `status` waits for the process to exit before
+  it will say `done`, so wait for `done` rather than watching the directory.
 - Calling `build-deck` directly? Check before you speak:
 
   ```bash

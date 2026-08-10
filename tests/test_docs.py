@@ -22,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCS = [
     REPO_ROOT / "README.md",
     REPO_ROOT / "SKILL.md",
+    REPO_ROOT / "CHEATSHEET.md",
     REPO_ROOT / "skills" / "palette" / "SKILL.md",
 ]
 

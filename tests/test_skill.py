@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -278,6 +280,73 @@ class TestDeckHelperBehaviour:
             capture_output=True, text=True,
         )
         assert result.returncode != 0 and "no plan at" in result.stderr
+
+    def _status_of(self, out_dir: Path, pid: int) -> dict:
+        """Run `status` against a hand-written state file naming *pid*."""
+        (out_dir / "build.log").write_text("rendered 5 slides\n")
+        (out_dir / ".palette-build.json").write_text(json.dumps(
+            {"state": "running", "pid": pid, "log": str(out_dir / "build.log"),
+             "out_dir": str(out_dir), "started_at": int(time.time()) - 90}
+        ))
+        result = subprocess.run(
+            [sys.executable, str(DECK_PY), "status", "--out-dir", str(out_dir)],
+            capture_output=True, text=True,
+        )
+        return json.loads(result.stdout)
+
+    def test_a_live_build_is_not_done_even_with_a_full_pptx_on_disk(
+        self, tmp_path: Path
+    ) -> None:
+        """The regression this file exists for, in its second form.
+
+        `build-deck` renders, lints the geometry, and re-renders to the *same
+        path* until the layout settles — three passes on a plain five-slide
+        deck, the last still fixing overflows. So a complete, valid,
+        correctly-sized .pptx sits on disk for minutes while the build is
+        still working on it.
+
+        Reporting that as done hands the user a pre-repair deck, or a torn
+        read of a zip being rewritten underneath them. Liveness wins over the
+        filesystem; the filesystem only gets to speak once the process is gone.
+        """
+        (tmp_path / "deck.pptx").write_bytes(b"x" * 200_000)
+        for n in range(1, 6):
+            (tmp_path / f"slide-{n}.png").write_bytes(b"\x89PNG")
+
+        # A real live process whose command line looks like a build, so this
+        # exercises `_alive` for real rather than mocking the thing under test.
+        fake = tmp_path / "palette.py"
+        fake.write_text("import time\ntime.sleep(60)\n")
+        build = subprocess.Popen([sys.executable, str(fake), "build-deck"])
+        try:
+            result = self._status_of(tmp_path, build.pid)
+        finally:
+            build.kill()
+            build.wait()
+
+        assert result["state"] == "running", "a live build must never report done"
+        assert result["done"] is False
+        assert "pptx" not in result, (
+            "a path handed over mid-build points at a deck still being rewritten"
+        )
+
+    def test_a_finished_build_is_done_once_the_process_is_gone(self, tmp_path: Path) -> None:
+        """The other direction: a dead pid must not hold a real deck hostage."""
+        (tmp_path / "deck.pptx").write_bytes(b"x" * 200_000)
+        result = self._status_of(tmp_path, 999_999_999)  # certainly not running
+        assert result["state"] == "done" and result["done"] is True
+
+    def test_a_recycled_pid_does_not_poll_forever(self, tmp_path: Path) -> None:
+        """Liveness now gates completion, so `_alive` must mean *our* build.
+
+        A bare `os.kill(pid, 0)` is true for whatever process inherited the
+        number, which would leave the agent polling a finished deck forever.
+        """
+        module = self._deck_module()
+        assert module._alive(os.getpid()) is False, (
+            "this pytest process is alive but is not a palette build"
+        )
+        assert module._alive(-1) is False
 
 
 class TestPaletteHomeResolution:

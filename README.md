@@ -344,8 +344,8 @@ assets/            Logo, favicons, IBM brand assets used by the renderer
 icons/carbon/      Carbon icon library
 workspace/         Per-session decks (gitignored, ephemeral)
 
-palette_skill/     Agent skill — HTTP client, generated SKILL.md, installer
-tests/             Contract tests binding the skill to app.py + config.py
+skills/palette/    The agent skill, exactly as it ships — SKILL.md + scripts/
+tests/             Contract tests binding the skill to palette.py's CLI
 ```
 
 ---
@@ -355,6 +355,7 @@ tests/             Contract tests binding the skill to app.py + config.py
 | Doc | Read it when |
 |---|---|
 | **this file** | you want to run Palette — install, the web UI, config, containers, deployment |
+| [`CHEATSHEET.md`](CHEATSHEET.md) | something is broken and you want to reset it, or you want the test loop in six lines |
 | [`SKILL.md`](SKILL.md) | you want the agent-facing instructions on their own |
 | [`skills/palette/SKILL.md`](skills/palette/SKILL.md) | you are looking at what actually ships to a host, including the long-build path |
 | [`skills/palette/scripts/deck.py`](skills/palette/scripts/deck.py) | you need to know how a build survives a step limit |

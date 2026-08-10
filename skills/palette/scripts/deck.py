@@ -85,13 +85,28 @@ def verify(out_dir: Path) -> dict:
 
 
 def _alive(pid: int) -> bool:
+    """Is *our* build still running under this pid?
+
+    `status` now waits on this before it will call a build done, so a pid that
+    has been recycled onto an unrelated process would poll forever. Checking
+    the command line as well costs one `ps` and rules that out. If `ps` is
+    missing or shaped differently, fall back to the signal test rather than
+    calling a live build dead -- the wrong answer in that direction is worse.
+    """
+    if pid < 1:
+        return False
     try:
         os.kill(pid, 0)
-    except (ProcessLookupError, PermissionError):
+    except (ProcessLookupError, PermissionError, OSError):
         return False
-    except OSError:
-        return False
-    return True
+    try:
+        listing = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return "palette.py" in listing.stdout if listing.returncode == 0 else True
 
 
 def _run_palette(home: Path, argv: list[str]) -> subprocess.CompletedProcess:
@@ -211,14 +226,15 @@ def status(args: argparse.Namespace) -> int:
     running = _alive(state.get("pid", -1))
     elapsed = int(time.time()) - int(state.get("started_at", time.time()))
 
-    if checked["verified"]:
-        # How long the build *took*, not how long ago it started. Polling an
-        # hour later would otherwise report an hour, and the agent is told to
-        # flag a long build -- it would flag a fast one it happened to revisit.
-        finished = Path(checked["pptx"]).stat().st_mtime
-        took = max(0, int(finished) - int(state.get("started_at", finished)))
-        result = {"state": "done", "done": True, **checked, "elapsed_seconds": took}
-    elif running:
+    # Liveness is checked FIRST, and a .pptx on disk cannot overrule it.
+    #
+    # `build-deck` renders the deck, lints the geometry, and re-renders to the
+    # *same path* until the layout settles -- observed three passes on a plain
+    # five-slide deck, the last one still fixing overflows. So a complete,
+    # valid, correctly-sized .pptx exists minutes before the build is finished.
+    # Trusting the file while the process still holds it hands the user a
+    # pre-repair deck, or a torn read of a zip being rewritten underneath them.
+    if running:
         # `build-deck` prints only when it finishes -- the pipeline's own stage
         # logging goes to a per-session file, not to stdout -- so the log is
         # empty for most of a run. Report elapsed time, which is always true,
@@ -231,6 +247,13 @@ def status(args: argparse.Namespace) -> int:
         latest = _tail(Path(state["log"]), 1)
         if latest:
             result["progress"] = latest
+    elif checked["verified"]:
+        # How long the build *took*, not how long ago it started. Polling an
+        # hour later would otherwise report an hour, and the agent is told to
+        # flag a long build -- it would flag a fast one it happened to revisit.
+        finished = Path(checked["pptx"]).stat().st_mtime
+        took = max(0, int(finished) - int(state.get("started_at", finished)))
+        result = {"state": "done", "done": True, **checked, "elapsed_seconds": took}
     else:
         # Process gone and no usable .pptx: surface the log, because the reason
         # is in it and the agent cannot see the detached process's output.
@@ -260,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    pl = sub.add_parser("plan", help="request -> markdown plan (blocks ~40s)")
+    pl = sub.add_parser("plan", help="request -> markdown plan (blocks 40-90s)")
     pl.add_argument("--request", required=True, help="the user's request, passed through as-is")
     pl.add_argument("--context", default=None, help="material the user pasted, to ground the plan")
     pl.add_argument("--source", action="append", help="grounding file on disk (repeatable)")
