@@ -204,6 +204,59 @@ def _detach(home: Path, argv: list[str], log: Path, exit_file: Path) -> subproce
         )
 
 
+def _summarise_build(out_dir: Path) -> dict:
+    """One build's state, without the polling machinery `status` prints."""
+    state = _load(out_dir / STATE)
+    if not state:
+        return {"state": "none"}
+    checked = verify(out_dir)
+    if _finished_at(out_dir / EXIT) is None and _alive(state.get("pid", -1)) is not False:
+        elapsed = int(time.time()) - int(state.get("started_at", time.time()))
+        return {"state": "running", "elapsed_seconds": elapsed}
+    if checked["verified"]:
+        return {"state": "done", "pptx": checked["pptx"], "pptx_bytes": checked["pptx_bytes"],
+                "slide_previews": checked["slide_previews"]}
+    return {"state": "error", "log": str(out_dir / "build.log")}
+
+
+def find(args: argparse.Namespace) -> int:
+    """Where is everything? Every plan and build under a root, in one call.
+
+    This replaces the shell loop people were copy-pasting to answer "where did
+    my deck go" -- which hardcoded a path, exported a variable `status` does
+    not use, and had to be edited per machine. A question asked this often
+    deserves a command rather than a snippet.
+    """
+    root = Path(args.root).expanduser().resolve()
+    if not root.is_dir():
+        raise SystemExit(f"error: no directory at {root}")
+
+    plans = {p.parent / p.name[1:-len(".plan.json")] : p for p in root.rglob(".*.plan.json")}
+    builds = sorted({p.parent for p in root.rglob(STATE)})
+
+    found = []
+    for plan_path, sidecar in sorted(plans.items()):
+        found.append({
+            "kind": "plan",
+            "path": str(plan_path),
+            "written": plan_path.is_file(),
+            "state": _load(sidecar).get("state", "unknown"),
+        })
+    for out_dir in builds:
+        found.append({"kind": "build", "dir": str(out_dir), **_summarise_build(out_dir)})
+
+    done = [f for f in found if f["kind"] == "build" and f.get("state") == "done"]
+    print(json.dumps({
+        "root": str(root),
+        "found": found,
+        "note": (
+            f"{len(done)} finished deck(s)" if done
+            else "no finished deck under this root"
+        ),
+    }, indent=2))
+    return 0
+
+
 def _start_plan(home: Path, argv: list[str], out: Path, label: str) -> int:
     """Kick off a plan or an edit detached, and say how to collect it."""
     process = _detach(home, argv, _sidecar(out, "plan.log"), _sidecar(out, "plan.exit"))
@@ -335,7 +388,17 @@ def status(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir).expanduser().resolve()
     state = _load(out_dir / STATE)
     if not state:
-        raise SystemExit(f"error: no build started in {out_dir} — run `deck.py start` first")
+        # "Nothing here yet" is an answer, not an error, because this is also
+        # the way to ask *whether* a build exists. An agent has no memory
+        # between turns: told only how to start a build, it re-runs the
+        # confirmation gate on every turn, asks again, and never polls the one
+        # it already started. Seen for 33 minutes with a finished deck on disk.
+        print(json.dumps({
+            "state": "none", "done": False, "out_dir": str(out_dir),
+            "note": "no build has been started in this directory",
+            "next": f"python {Path(__file__).name} start --plan <plan.md> --out-dir {out_dir}",
+        }, indent=2))
+        return 0
 
     checked = verify(out_dir)
     exit_code = _finished(out_dir)
@@ -432,6 +495,10 @@ def main(argv: list[str] | None = None) -> int:
     q = sub.add_parser("status", help="is it done? poll until state is done or error")
     q.add_argument("--out-dir", required=True)
     q.set_defaults(func=status)
+
+    fd = sub.add_parser("find", help="every plan and build under a root — 'where did my deck go?'")
+    fd.add_argument("--root", default=".", help="directory to search (default: cwd)")
+    fd.set_defaults(func=find)
 
     args = parser.parse_args(argv)
     return args.func(args)

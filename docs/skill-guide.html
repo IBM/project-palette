@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Palette Skill — Try It, Test It, Ship It</title>
+<meta name="description" content="How to try, test, and ship the Palette agent skill in Claude Code and CUGA.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22><text y=%2214%22 font-size=%2214%22>&#127912;</text></svg>">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; }
+  img, svg { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<style>
+  :root {
+    --ink:        #16181d;
+    --ink-soft:   #55596340;
+    --body:       #3d424e;
+    --muted:      #767c8a;
+    --rule:       #e2e1dd;
+    --ground:     #faf9f7;
+    --panel:      #ffffff;
+    --accent:     #0f62fe;
+    --accent-dim: #0f62fe1a;
+    --good:       #0e6b47;
+    --warn:       #8a4b06;
+    --bad:        #a52020;
+    --code-bg:    #f4f3f0;
+    --shadow:     0 1px 2px #16181d0a, 0 8px 24px #16181d08;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: "Inter var", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #f0eee9; --ink-soft: #b9b5ad40; --body: #c4c1ba; --muted: #8b8880;
+      --rule: #2b2c30; --ground: #131417; --panel: #191a1e; --accent: #78a9ff;
+      --accent-dim: #78a9ff1f; --good: #6fdca4; --warn: #f0b166; --bad: #ff8a8a;
+      --code-bg: #202126; --shadow: 0 1px 2px #0006, 0 8px 24px #0004;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #f0eee9; --ink-soft: #b9b5ad40; --body: #c4c1ba; --muted: #8b8880;
+    --rule: #2b2c30; --ground: #131417; --panel: #191a1e; --accent: #78a9ff;
+    --accent-dim: #78a9ff1f; --good: #6fdca4; --warn: #f0b166; --bad: #ff8a8a;
+    --code-bg: #202126; --shadow: 0 1px 2px #0006, 0 8px 24px #0004;
+  }
+  :root[data-theme="light"] {
+    --ink: #16181d; --ink-soft: #55596340; --body: #3d424e; --muted: #767c8a;
+    --rule: #e2e1dd; --ground: #faf9f7; --panel: #ffffff; --accent: #0f62fe;
+    --accent-dim: #0f62fe1a; --good: #0e6b47; --warn: #8a4b06; --bad: #a52020;
+    --code-bg: #f4f3f0; --shadow: 0 1px 2px #16181d0a, 0 8px 24px #16181d08;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--body);
+    font-family: var(--sans);
+    font-size: 16.5px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 62rem; margin: 0 auto; padding: 0 1.5rem 6rem; }
+
+  /* ---------- masthead ---------- */
+  header.mast {
+    border-bottom: 1px solid var(--rule);
+    padding: 4.5rem 0 2.5rem;
+    margin-bottom: 3rem;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 1.1rem;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: clamp(2.4rem, 6vw, 3.9rem);
+    line-height: 1.06;
+    letter-spacing: -.02em;
+    color: var(--ink);
+    margin: 0 0 1.2rem;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-size: 1.18rem;
+    max-width: 40rem;
+    color: var(--body);
+    margin: 0;
+    text-wrap: pretty;
+  }
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  /* ---------- structure ---------- */
+  section { margin: 0 0 4rem; scroll-margin-top: 2rem; }
+  h2 {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: 1.95rem;
+    letter-spacing: -.012em;
+    color: var(--ink);
+    margin: 0 0 .5rem;
+    padding-top: 1.6rem;
+    border-top: 1px solid var(--rule);
+    text-wrap: balance;
+  }
+  h3 {
+    font-size: 1.02rem;
+    font-weight: 650;
+    color: var(--ink);
+    margin: 2.2rem 0 .6rem;
+    letter-spacing: -.005em;
+  }
+  .lede { max-width: 42rem; margin: 0 0 1.6rem; }
+  p { margin: 0 0 1rem; max-width: 42rem; text-wrap: pretty; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px;
+  }
+  strong { color: var(--ink); font-weight: 620; }
+
+  /* ---------- code ---------- */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 7px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: .845rem;
+    line-height: 1.68;
+    margin: 0 0 1.2rem;
+    color: var(--ink);
+  }
+  code { font-family: var(--mono); font-size: .875em; }
+  p code, li code, td code {
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: .08em .34em;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  pre .c { color: var(--muted); }
+  pre .o { color: var(--good); }
+
+  /* ---------- stage list: the numbers encode a real sequence ---------- */
+  .stages { list-style: none; padding: 0; margin: 0; counter-reset: stage; }
+  .stage {
+    position: relative;
+    counter-increment: stage;
+    padding: 0 0 1.9rem 3.4rem;
+    border-left: 1px solid var(--rule);
+    margin-left: 1rem;
+  }
+  .stage:last-child { border-left-color: transparent; padding-bottom: 0; }
+  .stage::before {
+    content: counter(stage);
+    position: absolute;
+    left: -1rem; top: -.1rem;
+    width: 2rem; height: 2rem;
+    display: grid; place-items: center;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 50%;
+    font-family: var(--mono);
+    font-size: .8rem;
+    color: var(--ink);
+    box-shadow: var(--shadow);
+  }
+  .stage h3 { margin-top: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem; }
+  .cost {
+    font-family: var(--mono);
+    font-size: .7rem;
+    font-weight: 400;
+    letter-spacing: .04em;
+    color: var(--muted);
+    border: 1px solid var(--rule);
+    border-radius: 20px;
+    padding: .1rem .55rem;
+  }
+
+  /* ---------- callouts ---------- */
+  .note {
+    border-left: 2px solid var(--accent);
+    background: var(--accent-dim);
+    padding: .85rem 1.1rem;
+    border-radius: 0 6px 6px 0;
+    margin: 0 0 1.2rem;
+    max-width: 42rem;
+  }
+  .note p:last-child { margin-bottom: 0; }
+  .note.hard { border-left-color: var(--bad); background: color-mix(in srgb, var(--bad) 8%, transparent); }
+  .note.soft { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 9%, transparent); }
+
+  /* ---------- tables ---------- */
+  .scroll { overflow-x: auto; margin: 0 0 1.3rem; }
+  table { border-collapse: collapse; width: 100%; font-size: .93rem; min-width: 34rem; }
+  th, td { text-align: left; padding: .6rem .8rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th {
+    font-family: var(--mono); font-size: .7rem; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--muted); font-weight: 500;
+    border-bottom-color: var(--ink-soft);
+  }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  tfoot td { font-weight: 650; color: var(--ink); border-top: 1px solid var(--ink-soft); border-bottom: none; }
+
+  /* ---------- verdict chips ---------- */
+  .chip {
+    display: inline-block; font-family: var(--mono); font-size: .68rem;
+    letter-spacing: .06em; text-transform: uppercase;
+    padding: .12rem .5rem; border-radius: 3px; white-space: nowrap;
+  }
+  .chip.ok   { color: var(--good); background: color-mix(in srgb, var(--good) 13%, transparent); }
+  .chip.no   { color: var(--bad);  background: color-mix(in srgb, var(--bad) 13%, transparent); }
+  .chip.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 15%, transparent); }
+
+  /* ---------- the two-file diagram ---------- */
+  .files {
+    display: grid; gap: .6rem; margin: 0 0 1.4rem; max-width: 42rem;
+  }
+  .file {
+    display: grid; grid-template-columns: auto 1fr auto; gap: .9rem; align-items: baseline;
+    background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
+    padding: .8rem 1rem; box-shadow: var(--shadow);
+  }
+  .file .nm { font-family: var(--mono); font-size: .86rem; color: var(--ink); font-weight: 500; }
+  .file .ds { font-size: .89rem; color: var(--muted); }
+  .file .ln { font-family: var(--mono); font-size: .76rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* ---------- failure cards ---------- */
+  .fail {
+    background: var(--panel); border: 1px solid var(--rule); border-radius: 8px;
+    padding: 1.15rem 1.3rem; margin: 0 0 1rem; box-shadow: var(--shadow);
+  }
+  .fail h3 { margin: 0 0 .5rem; }
+  .fail p { margin-bottom: .7rem; }
+  .fail p:last-child { margin-bottom: 0; }
+  .fail .sym {
+    font-family: var(--mono); font-size: .82rem; color: var(--bad);
+    display: block; margin-bottom: .6rem;
+  }
+
+  details {
+    border: 1px solid var(--rule); border-radius: 7px; padding: .8rem 1.1rem;
+    margin: 0 0 1rem; background: var(--panel); max-width: 42rem;
+  }
+  summary { cursor: pointer; font-weight: 600; color: var(--ink); font-size: .95rem; }
+  details[open] summary { margin-bottom: .8rem; }
+
+  ul.tight { margin: 0 0 1.2rem; padding-left: 1.2rem; max-width: 42rem; }
+  ul.tight li { margin-bottom: .4rem; }
+
+  footer {
+    border-top: 1px solid var(--rule); padding-top: 1.6rem; margin-top: 1rem;
+    font-size: .87rem; color: var(--muted);
+  }
+  @media (max-width: 34rem) {
+    .stage { padding-left: 2.6rem; }
+    .file { grid-template-columns: 1fr; gap: .2rem; }
+  }
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">Palette · agent skill</p>
+  <h1>Build a deck by asking for one</h1>
+  <p class="standfirst">
+    Palette ships as an <strong>agent skill</strong> — two files, eight kilobytes, no build
+    step — that works the same in Claude Code and in CUGA. This is how to try it,
+    how to test it from a clean slate, and what broke along the way.
+  </p>
+</header>
+
+<section id="try">
+  <h2>Try it</h2>
+  <p class="lede">
+    Two environment variables and one install command. Then ask for a deck in plain English.
+  </p>
+
+<pre><span class="c"># once, in the Palette checkout</span>
+make install
+export PALETTE_HOME=$PWD
+export RITS_API_KEY=&lt;key&gt;        <span class="c"># IBM-internal; needs the VPN</span></pre>
+
+  <h3>Claude Code</h3>
+<pre>make skill-install-claude        <span class="c"># -&gt; ~/.claude/skills/palette</span></pre>
+  <p>Then, in any session: <em>“Build me a 5-slide deck about RAG.”</em></p>
+
+  <h3>CUGA</h3>
+<pre>make skill-install CUGA=&lt;cuga-checkout&gt;
+
+<span class="c"># in the CUGA checkout's .env — loaded at startup, survives a new terminal</span>
+PALETTE_HOME=/abs/path/to/project-palette
+RITS_API_KEY=&lt;key&gt;
+
+cuga start demo_palette</pre>
+
+  <div class="note">
+    <p>
+      Either host gives you <strong>a plan and a question first</strong> — approving it is a
+      second turn — then a rendered <code>.pptx</code>. That gate is deliberate: a plan is
+      cheap to change, a deck costs minutes.
+    </p>
+  </div>
+</section>
+
+<section id="shape">
+  <h2>What the skill actually is</h2>
+  <p class="lede">
+    Two files. No package, no wheel, nothing generated. A skill is a folder you copy
+    where the host scans — the same shape as Anthropic’s <code>pptx</code> skill.
+  </p>
+
+  <div class="files">
+    <div class="file">
+      <span class="nm">SKILL.md</span>
+      <span class="ds">what the agent is told</span>
+      <span class="ln">216 lines</span>
+    </div>
+    <div class="file">
+      <span class="nm">scripts/deck.py</span>
+      <span class="ds">the only thing it runs — stdlib only</span>
+      <span class="ln">441 lines</span>
+    </div>
+  </div>
+
+  <p>
+    The YAML frontmatter is load-bearing. Its <code>description</code> <em>is</em> the entire
+    routing decision — the host shows only that when deciding whether to load the skill,
+    so it is written as phrases people actually say, not as a summary of what Palette is.
+  </p>
+
+  <h3>Why there is a helper script at all</h3>
+  <p>
+    <code>deck.py</code> is a wrapper, but for four reasons, each earned by something breaking:
+  </p>
+  <ul class="tight">
+    <li><strong>Working directory.</strong> <code>palette.py</code> only runs from the checkout,
+      but output must land in the agent’s workspace. Told to hold both roots, an agent
+      conflated them and ran a path that does not exist.</li>
+    <li><strong>Detachment.</strong> Slow commands run in their own process and are polled,
+      so a host’s step limit cannot cut them short.</li>
+    <li><strong>Completion.</strong> <code>verified</code> is computed by stat-ing the file —
+      the agent relays a fact rather than forming a belief.</li>
+    <li><strong>Error relay.</strong> A detached build’s output goes to a log the agent
+      cannot see, so <code>status</code> tails it into the JSON.</li>
+  </ul>
+
+  <div class="note">
+    <p>
+      The dividing line: <strong>SKILL.md holds judgment, <code>deck.py</code> holds facts.</strong>
+      Anything the model could get wrong in its own favour lives in code. “Is there a deck?”
+      is checkable, so it is code. “Should I ask before building?” is not, so it is prose.
+    </p>
+  </div>
+</section>
+
+<section id="clean">
+  <h2>Testing from a clean slate</h2>
+  <p class="lede">
+    Five stages, cheapest first, each proving something the next one assumes.
+    <strong>Stop at the first failure</strong> — a later stage cannot be read while an
+    earlier one is red.
+  </p>
+
+<pre>P=~/code/project-palette;  C=~/code/cuga-agent;  S=~/code/cuga-skills</pre>
+
+  <ol class="stages">
+    <li class="stage">
+      <h3>The repos agree with themselves <span class="cost">~10s · no network, no key</span></h3>
+<pre>(cd $P &amp;&amp; .venv/bin/python -m pytest tests/ -q)
+(cd $C &amp;&amp; .venv/bin/python -m pytest tests/unit/test_demo_palette_preset.py \
+                                     tests/e2e/skills/test_palette_skill_invocation.py -q)
+(cd $S &amp;&amp; .venv/bin/python -m pytest -q)
+
+<span class="o">110 passed, 1 skipped   ·   26 passed   ·   13 passed</span></pre>
+      <p>
+        No models are involved, so a failure here is a real defect and never the weather.
+        These cover the skill naming only flags <code>palette.py</code> actually has (read out
+        of its argparse), the packaging pointing at code that exists, CUGA’s preset settings,
+        and the agent reaching <code>load_skill</code>.
+      </p>
+    </li>
+
+    <li class="stage">
+      <h3>The installed copies are the real ones <span class="cost">~1s</span></h3>
+<pre>make -C $P skill-install CUGA=$C
+make -C $P skill-install-claude
+make -C $P verify CUGA=$C
+
+<span class="o">12 passed, 1 skipped</span></pre>
+      <p>
+        <code>make verify</code> compares every installed copy against <code>skills/palette</code>
+        byte for byte and names the file that differs, then runs the installed
+        <code>deck.py</code> to confirm it resolves <code>$PALETTE_HOME</code> from wherever it
+        was copied to. It takes the locations as input and skips by name for anything you
+        did not give it.
+      </p>
+      <div class="note hard">
+        <p>
+          <strong>Do not skip this one.</strong> An agent reads its installed copy, never your
+          working tree. Both real CUGA failures were diagnosed at length before anyone
+          noticed the agent was running a copy made before the fix.
+        </p>
+      </div>
+    </li>
+
+    <li class="stage">
+      <h3>Palette builds a deck, no agent involved <span class="cost">~5 min · needs VPN</span></h3>
+<pre>cd $P &amp;&amp; export PALETTE_HOME=$PWD
+S=skills/palette/scripts/deck.py
+python $S plan   --request "5 slides on RAG" --out /tmp/p.md --wait
+python $S start  --plan /tmp/p.md --out-dir /tmp/deck
+python $S status --out-dir /tmp/deck        <span class="c"># until "done": true</span></pre>
+      <p>
+        <strong>This is the diagnostic pivot.</strong> If it passes and stage 4 or 5 fails, the
+        fault is in the agent or the host, never in Palette. <code>--wait</code> is the
+        convenience for a terminal; agents must not use it.
+      </p>
+      <p>Or let the test do it: <code>make verify CUGA=$C DECK=1</code>.</p>
+    </li>
+
+    <li class="stage">
+      <h3>Claude Code <span class="cost">~5 min</span></h3>
+<pre>make -C $P skill-install-claude</pre>
+      <p>With both variables in the environment: <em>“Build me a 5-slide deck about RAG.”</em></p>
+    </li>
+
+    <li class="stage">
+      <h3>CUGA <span class="cost">~10 min</span></h3>
+<pre>grep -q '^PALETTE_HOME=' $C/.env || echo "PALETTE_HOME=$P" &gt;&gt; $C/.env
+rm -rf /tmp/.venv                <span class="c"># sandbox venv; a stale one once ran deleted code</span>
+cd $C &amp;&amp; cuga start demo_palette</pre>
+      <p>Then check from your shell rather than the chat:</p>
+<pre>ls -l cuga_workspace/*/deck/deck.pptx
+cat  cuga_workspace/*/deck/.palette-build.json    <span class="c"># "state": "done"</span></pre>
+    </li>
+  </ol>
+
+  <h3>Is that deck real?</h3>
+  <p>
+    The one question worth asking, because an agent can describe a file it never wrote.
+  </p>
+<pre>D=/tmp/deck
+ls -l $D/deck.pptx                                <span class="c"># &gt;100KB, not 4KB</span>
+unzip -l $D/deck.pptx | grep -c "slides/slide"    <span class="c"># slide count</span>
+unzip -p $D/deck.pptx ppt/slides/slide1.xml | grep -c "IBM Plex"</pre>
+  <p>
+    Palette’s renderer forces <strong>IBM Plex</strong>, so a deck hand-written with
+    <code>pptxgenjs</code> defaults could not carry it. That grep is the difference between
+    “a deck exists” and “<em>Palette</em> built this deck”.
+  </p>
+</section>
+
+<section id="failures">
+  <h2>Four failures worth knowing about</h2>
+  <p class="lede">
+    Each one looked like a Palette bug from the chat, and none of them was.
+    All four were the same shape: <strong>the work succeeded and the caller never found out.</strong>
+  </p>
+
+  <div class="fail">
+    <h3>A sandbox that will not discuss other processes</h3>
+    <span class="sym">status → "state": "error", seconds after start</span>
+    <p>
+      CUGA runs each step under Seatbelt with <code>(allow signal (target self))</code>. So
+      <code>os.kill(pid, 0)</code> against the detached build raises <code>PermissionError</code>,
+      and <code>ps</code> cannot even exec. Both were read as “the process is gone”, so
+      <code>status</code> reported failure on its first poll — minutes before the
+      <code>.pptx</code> could exist. The agent then invented missing dependencies to explain it.
+    </p>
+    <p>
+      <strong>Fix:</strong> the build records its own ending in <code>.palette-exit</code>.
+      Reading a workspace file is permitted everywhere; asking about another process is not.
+      Liveness is now tri-state, and “undetermined” never means “dead”.
+    </p>
+  </div>
+
+  <div class="fail">
+    <h3>A step limit that killed a working call</h3>
+    <span class="sym">“the palette script timed out while trying to create the plan”</span>
+    <p>
+      Drafting a plan is one model call: 43–82s locally, <strong>~170s inside the sandbox</strong>,
+      against a 120s step. The step was killed; <code>palette.py</code> carried on in its own
+      process and wrote a good 72-line plan seconds later, with nobody looking.
+    </p>
+    <p>
+      <strong>Fix:</strong> raising the timeout only moves the cliff. Every slow command now
+      detaches and is polled — <code>plan</code> and <code>edit</code> the same as the build.
+    </p>
+  </div>
+
+  <div class="fail">
+    <h3>A deck that appears before it is finished</h3>
+    <span class="sym">"done": true, while three render passes were still running</span>
+    <p>
+      <code>build-deck</code> renders, lints the geometry, and re-renders to the
+      <em>same path</em> until the layout settles. A complete, valid, correctly-sized
+      <code>.pptx</code> therefore sits on disk for minutes before the build is over.
+      Checking the file before the process handed over a pre-repair deck.
+    </p>
+    <p>
+      <strong>Fix:</strong> the build must have ended <em>and</em> the file must be real.
+    </p>
+  </div>
+
+  <div class="fail">
+    <h3>A confirmation gate with no memory</h3>
+    <span class="sym">“I keep saying yes but I am still waiting on a deck”</span>
+    <p>
+      The skill described how to <em>start</em> a deck and never once described a deck that
+      already exists. An agent does not reliably remember earlier turns, so every turn began
+      again at “present the plan and ask the user to confirm”. Saying yes could not break the
+      loop, because the loop was not waiting on the user. The state file proved it: written
+      once when the build started, then untouched for 33 minutes — <code>status</code> was
+      never called again, while a finished five-slide deck sat in the workspace.
+    </p>
+    <p>
+      <strong>Fix:</strong> the workflow now opens with <strong>step 0</strong> — ask the
+      filesystem where you already are. For that to work, <code>status</code> had to stop
+      erroring on an empty directory and answer <code>none</code> instead. A check that fails
+      when the answer is “nothing yet” is not usable as a check, which is why nothing ever
+      looked.
+    </p>
+  </div>
+
+  <div class="note soft">
+    <p>
+      The thread through all three: <strong>a killed step is silent.</strong> It tells you nothing
+      about the work while the work finishes anyway. So no command blocks, and completion is a
+      fact on disk rather than a return value.
+    </p>
+  </div>
+
+  <details>
+    <summary>The lesson that shaped the design</summary>
+    <p>
+      An agent once reported a deck that did not exist. An instruction was added saying not to.
+      It happened again. A stronger one was added. Again.
+    </p>
+    <p>
+      <strong>Prose cannot fix a behaviour the model has a reason to prefer.</strong> What worked
+      was moving the claim out of the agent’s judgment entirely: <code>deck.py status</code> stats
+      the file and returns <code>verified</code>. Every instruction failed; one <code>os.stat</code>
+      worked.
+    </p>
+  </details>
+</section>
+
+<section id="maintain">
+  <h2>Does Palette changing mean the skill changes?</h2>
+  <p class="lede">
+    Mostly no. The coupling is <strong>eleven strings</strong> — three subcommands and eight flags.
+  </p>
+
+<pre>build-plan   --out --context --source
+edit-plan    --plan --out
+build-deck   --plan --out-dir --json --palette-family</pre>
+
+  <p>
+    <code>palette.py</code> exposes sixteen flags; the skill touches eight. Change prompts, the
+    pipeline, the renderer, models, post-processing — the skill needs nothing, because it drives
+    the CLI, not the code. Only a renamed command or flag reaches it.
+  </p>
+
+  <p>And you do not have to remember. <code>make skill-test</code> reads the argparse and diffs it:</p>
+<pre>AssertionError: deck.py passes flags palette.py rejects: ['build-deck --out-dir']
+FAILED tests/test_skill.py::TestSkillMatchesTheCLI
+<span class="c">1 failed, 29 passed in 0.41s</span></pre>
+
+  <div class="note">
+    <p>
+      <strong>Why this is not a maintenance burden:</strong> the skill lives in the Palette repo,
+      next to <code>palette.py</code>. The PR that renames a flag is the PR that updates the
+      skill, and the test fails if it does not. There is no second repo drifting quietly —
+      which is exactly why CUGA’s catalog carries a <em>pointer</em> to Palette rather than a copy.
+    </p>
+  </div>
+
+  <h3>One copy, owned by Palette</h3>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Repo</th><th>Holds</th><th>Verified by</th></tr></thead>
+      <tbody>
+        <tr><td>project-palette</td><td>the skill itself</td><td><code>make skill-test</code></td></tr>
+        <tr><td>cuga-skills</td><td>a catalog entry pointing at Palette, pinned by <code>dirHash</code></td><td>a test asserting <code>skills/palette</code> does <em>not</em> exist locally</td></tr>
+        <tr><td>cuga-agent</td><td>an installed copy plus environment settings</td><td><code>make verify CUGA=…</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    Nothing about the skill is machine-specific — no absolute paths, nothing written at install
+    time. Where Palette <em>lives</em> is per-machine, so it belongs in the environment like
+    <code>$JAVA_HOME</code>. That is what lets the catalog verify the folder by hash, and a test
+    enforces it.
+  </p>
+</section>
+
+<section id="cuga">
+  <h2>What CUGA has to add</h2>
+  <p class="lede">
+    Deliberately little, and none of it explains how to build a deck.
+  </p>
+
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>File</th><th class="num">Lines</th><th>What it is</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>test_palette_deck_e2e.py</code></td><td class="num">360</td><td>real model → real <code>.pptx</code></td></tr>
+        <tr><td><code>test_palette_skill_invocation.py</code></td><td class="num">343</td><td>no model, runs in seconds</td></tr>
+        <tr><td><code>test_demo_palette_preset.py</code></td><td class="num">238</td><td>the preset’s four settings</td></tr>
+        <tr><td><code>demo_manage_setup.py</code></td><td class="num">45</td><td>greeting, starters, “Deck Builder”</td></tr>
+        <tr><td><code>cli/main.py</code></td><td class="num">100</td><td>preset + two settings + warnings</td></tr>
+        <tr><td>docs</td><td class="num">99</td><td>README, test README</td></tr>
+      </tbody>
+      <tfoot>
+        <tr><td>7 files</td><td class="num">1166</td><td>941 of them tests</td></tr>
+      </tfoot>
+    </table>
+  </div>
+
+  <p>
+    An earlier version carried a supervisor config with a deck-builder persona — load the skill,
+    honour the confirmation gate, poll the build. Every line already lived in
+    <code>SKILL.md</code>, and the copy went stale the moment the skill changed. It was deleted,
+    and a test now fails if it comes back.
+  </p>
+  <p>
+    What remains is two settings: a step long enough that nothing gets cut short, and
+    auto-continue on, because a deck is minutes of polling and the first progress note written as
+    prose would otherwise end the run mid-build.
+  </p>
+</section>
+
+<section id="state">
+  <h2>Where it stands</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Checked</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td>Offline suites — Palette / CUGA / cuga-skills</td><td><span class="chip ok">110 · 26 · 13 pass</span></td></tr>
+        <tr><td>Deck built by hand, three routes in (bare, pasted <code>--context</code>, edited plan)</td><td><span class="chip ok">verified</span></td></tr>
+        <tr><td>Full chain inside CUGA’s real Seatbelt policy — plan, then build</td><td><span class="chip ok">verified</span></td></tr>
+        <tr><td>Installed copies byte-identical on both hosts</td><td><span class="chip ok">verified</span></td></tr>
+        <tr><td>A real model <em>choosing</em> to drive it, unattended</td><td><span class="chip warn">not proven</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Everything below that last decision is verified; the decision itself is not. The sandboxed
+    build that closed the chain produced a 4-slide deck for a 4-slide request — 232KB, IBM Plex,
+    valid OOXML, three render passes — in 382 seconds.
+  </p>
+</section>
+
+<footer>
+  <p>
+    Point people at Palette’s <strong>README → “Using Palette from an agent” → “Try it — start here”</strong>.
+    <code>CHEATSHEET.md</code> has the reset levels and the staged procedure above.
+    Every number on this page was measured, not estimated.
+  </p>
+</footer>
+
+</div>
+
+</body>
+</html>

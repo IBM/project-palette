@@ -144,6 +144,18 @@ skill-package: ## Package the skill as dist/palette-skill.tar.gz (droppable into
 skill-test: ## Check the skill is self-consistent (no server, no network)
 	$(PY) -m pytest tests/test_skill.py -q
 
+verify: ## Check the skill where agents read it (make verify CUGA=<path> [DECK=1])
+	@# Takes the three locations as input: this checkout, a CUGA checkout, and
+	@# any other skills roots. Skips by name for anything it was not given, so
+	@# `make verify` alone still checks Claude Code's copy.
+	@#
+	@# DECK=1 additionally builds a real deck. Minutes, and needs the VPN.
+	PALETTE_HOME=$(PWD) \
+	CUGA_HOME=$(CUGA) \
+	SKILLS_ROOTS=$(if $(SKILLS_ROOTS),$(SKILLS_ROOTS),$(HOME)/.claude/skills) \
+	PALETTE_VERIFY_DECK=$(if $(DECK),1,) \
+	$(PY) -m pytest tests/test_installed.py -q
+
 
 
 hooks: ## Install the pre-commit guard (blocks commits that leave the skill stale)

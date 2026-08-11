@@ -148,6 +148,42 @@ again. The answer is on disk, not in the exit code.
 
 The loop is **plan → confirm → [edit → confirm] × N → build**.
 
+### Step 0 — find out where you already are
+
+**Run this before anything else, on every turn:**
+
+```bash
+python skills/palette/scripts/deck.py find --root .
+```
+
+You do not reliably remember earlier turns, and the user does. Ask the
+filesystem instead. `find` reports every plan and every build beneath the
+directory in one call, so it answers both halves at once:
+
+- **A plan already written?** Do not draft another. Present that one, or edit
+  it if the user asked for a change. Re-planning silently discards the version
+  they read and costs them another minute.
+- **A build already running or done?** See the table below.
+
+For one specific build, `status --out-dir <dir>` gives the same verdict with
+the polling fields:
+
+```bash
+python skills/palette/scripts/deck.py status --out-dir ./deck
+```
+
+| `state` | What it means | What to do |
+|---|---|---|
+| `none` | nothing started here | continue to step 1 |
+| `running` | a build is underway | say so with `elapsed_seconds` — **do not start another, and do not ask about the plan again** |
+| `done` | the deck exists | give the user the `pptx` path and stop |
+| `error` | a build failed | relay `log_tail`; ask before rebuilding |
+
+**A user repeating themselves means you missed something on disk, not that
+they want it built again.** If someone says "yes" a second time, or asks where
+their deck is, run this before answering. Starting a fresh build because you
+forgot the last one costs them ten minutes and produces two decks.
+
 1. **User asks for a deck** → run **plan** with their request (add `--context`
    if they pasted material), then poll `plan-status` until it is done.
 2. **Confirmation gate (required).** Present the plan and explicitly ask them to
@@ -156,7 +192,9 @@ The loop is **plan → confirm → [edit → confirm] × N → build**.
    > Here is the plan for your deck. Does this look right? Reply **yes** to
    > build the deck, or tell me what you'd like to change.
 
-   **Never start a build until the user has confirmed this plan.**
+   **Never start a build until the user has confirmed this plan** — and never
+   ask for that confirmation twice. If step 0 said a build is `running` or
+   `done`, the gate is already behind you; report the build instead.
 3. **Branch on the reply:**
    - **Confirms** ("yes", "looks good", "go ahead", "build it") → `start` the
      build, poll `status`, then give the user the `.pptx` path.

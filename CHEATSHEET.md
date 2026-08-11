@@ -16,43 +16,135 @@ export RITS_API_KEY=<key>          # IBM-internal; needs VPN
 
 ```bash
 make install                                    # venv + deps
-make skill-test                                 # ~40 fast tests, no models
+make skill-test                                 # fast tests, no models
 make skill-install CUGA=~/code/cuga-agent       # -> .cuga/skills/palette
 cd ~/code/cuga-agent
 PALETTE_HOME=~/code/project-palette cuga start demo_palette
 # then, in the chat: "Build me a 5-slide deck about RAG"
 ```
 
-## 1. Test without an agent, without a model
+## 1. Clean slate, end to end
 
-The fastest signal that the skill is not broken. No network, no key.
+Five stages, cheapest first, each proving something the next one assumes.
+**Stop at the first failure** — a later stage cannot be interpreted while an
+earlier one is red. Paths assume the three repos are siblings.
 
 ```bash
-make skill-test
+P=~/code/project-palette;  C=~/code/cuga-agent;  S=~/code/cuga-skills
 ```
 
-It reads `palette.py`'s argparse and fails if `SKILL.md` or `deck.py` names a
-command or flag that does not exist. This is the test that catches the skill
-drifting away from the CLI it drives.
-
-## 2. Test the skill by hand, with a model
-
-Skips the agent entirely — is it Palette or is it the agent?
+### Stage 1 — the repos agree with themselves (~10s, no network, no key)
 
 ```bash
+(cd $P && .venv/bin/python -m pytest tests/ -q)
+(cd $C && .venv/bin/python -m pytest tests/unit/test_demo_palette_preset.py \
+                                     tests/e2e/skills/test_palette_skill_invocation.py -q)
+(cd $S && .venv/bin/python -m pytest -q)
+```
+
+Expect roughly `103 / 26 / 13 passed`. No models are involved, so a failure
+here is a real defect and never the weather. Between them these cover: the
+skill naming only commands and flags `palette.py` actually has (read out of
+its argparse), the packaging pointing at code that exists, CUGA's preset
+settings, and the agent reaching `load_skill` and getting Palette's real
+instructions back.
+
+Palette's slice alone, if that is all you want: `make skill-test`.
+
+### Stage 2 — the installed copies are the real ones
+
+**The single most common cause of "my fix did nothing."** An agent reads its
+installed copy, never your working tree.
+
+```bash
+make -C $P skill-install CUGA=$C
+make -C $P skill-install-claude
+make -C $P verify CUGA=$C
+```
+
+`make verify` is the test for this. It compares every installed copy against
+`skills/palette` byte for byte and names the file that differs, checks the
+frontmatter a host routes on, and runs the installed `deck.py` to confirm it
+resolves `$PALETTE_HOME` from wherever it was copied to. It skips by name for
+any location you did not give it, so plain `make verify` still checks Claude
+Code's copy.
+
+Expect `12 passed, 1 skipped` — the skip is the real deck build, which is
+opt-in. Add `DECK=1` to include it (minutes, needs the VPN):
+
+```bash
+make -C $P verify CUGA=$C DECK=1
+```
+
+### Stage 3 — Palette builds a deck, no agent involved (~5 min)
+
+This is what separates "Palette is broken" from "the agent is confused".
+Needs `RITS_API_KEY` and the VPN.
+
+```bash
+cd $P && export PALETTE_HOME=$PWD
 S=skills/palette/scripts/deck.py
-python $S plan --request "5 slides on RAG" --out /tmp/p.md --wait   # blocks 40-180s
+python $S plan   --request "5 slides on RAG" --out /tmp/p.md --wait   # blocks 40-180s
 python $S start  --plan /tmp/p.md --out-dir /tmp/deck
-python $S status --out-dir /tmp/deck                                # repeat
+python $S status --out-dir /tmp/deck                                  # repeat until done
 ```
 
 `--wait` is the convenience for a terminal. **Agents must not use it** — they
 run `plan` bare, which returns at once, and collect it with `plan-status`,
 because a host that cuts a step short turns a working call into a silent
-failure. `status` is instant; repeat until `"done": true`. The build takes
-**3-10 minutes**.
+failure. `status` is instant; the build takes **3-10 minutes**.
 
-## 3. Is that deck real?
+Then confirm it is genuinely a Palette deck — §2 below. If Stage 3 passes and
+4 or 5 fails, the fault is in the agent or the host, not in Palette.
+
+### Stage 4 — Claude Code
+
+```bash
+make -C $P skill-install-claude
+```
+
+In a session with `PALETTE_HOME` and `RITS_API_KEY` in the environment:
+*"Build me a 5-slide deck about RAG."*
+
+### Stage 5 — CUGA
+
+```bash
+grep -q '^PALETTE_HOME=' $C/.env || echo "PALETTE_HOME=$P" >> $C/.env
+rm -rf /tmp/.venv                    # the sandbox's own venv; it rebuilds itself
+cd $C && cuga start demo_palette
+```
+
+Either host should give you **a plan and a question first** — approving it is
+a second turn. Then check from your shell rather than the chat, because both
+real failures here were an agent reporting failure over a working build:
+
+```bash
+ls -l cuga_workspace/*/deck/deck.pptx
+cat  cuga_workspace/*/deck/.palette-build.json    # "state": "done"
+```
+
+## 1b. Where did my deck go?
+
+The first thing to run when a session seems stuck, looping, or silent. It reads
+the filesystem, so it is true regardless of what the chat says:
+
+```bash
+python $P/skills/palette/scripts/deck.py find --root $C/cuga_workspace
+```
+
+Every plan and every build underneath, in one call. No `PALETTE_HOME`, no
+checkout — `find` only reads output directories.
+
+- **`"state": "done"`** on a build — the deck is finished and the agent simply
+  never told you. The `pptx` path in that entry is the file.
+- **`"state": "running"`** — wait; `elapsed_seconds` says how long.
+- **a plan with no build** — it stopped after the confirmation gate.
+- **nothing** — nothing was ever started there.
+
+This is also **Step 0** of the skill's own workflow, so the agent asks the
+same question before it says anything on a new turn.
+
+## 2. Is that deck real?
 
 The one question worth asking, because an agent can describe a file it never
 wrote. **Wait for `status` to say `"done"` first** — `build-deck` re-renders to
@@ -60,9 +152,10 @@ the same path two or three times while fixing geometry, so a complete-looking
 `deck.pptx` shows up minutes before the build is actually finished.
 
 ```bash
-ls -l /tmp/deck/deck.pptx                  # >100KB, not 4KB
-unzip -l /tmp/deck/deck.pptx | grep -c "slides/slide"
-unzip -p /tmp/deck/deck.pptx ppt/slides/slide1.xml | grep -c "IBM Plex"
+D=/tmp/deck                                       # or cuga_workspace/<id>/deck
+ls -l $D/deck.pptx                                # >100KB, not 4KB
+unzip -l $D/deck.pptx | grep -c "slides/slide"    # slide count
+unzip -p $D/deck.pptx ppt/slides/slide1.xml | grep -c "IBM Plex"
 ```
 
 `slide1.xml` carries **IBM Plex** because Palette's renderer forces it — so a
@@ -72,36 +165,8 @@ difference between "a deck exists" and "*Palette* built this deck".
 If there is no deck:
 
 ```bash
-tail -30 /tmp/deck/build.log
+tail -30 $D/build.log
 ```
-
-## 4. Test from CUGA
-
-```bash
-make skill-install CUGA=~/code/cuga-agent
-cd ~/code/cuga-agent
-PALETTE_HOME=~/code/project-palette cuga start demo_palette
-```
-
-Ask for a deck. You should get **a plan first** and a question — approving it is
-turn two. Then verify from your shell, not from the chat:
-
-```bash
-ls -l cuga_workspace/*/deck/deck.pptx
-cat  cuga_workspace/*/deck/.palette-build.json     # "state": "done"
-```
-
-## 5. Test from Claude Code
-
-Same skill, no CUGA:
-
-```bash
-make skill-install-claude          # -> ~/.claude/skills/palette
-```
-
-Then in Claude Code, with `PALETTE_HOME` and `RITS_API_KEY` in the environment,
-ask for a deck. Claude Code's Bash tool allows ten minutes, so it may run
-`build-deck` in one call rather than polling — both paths are supported.
 
 ---
 
@@ -121,19 +186,10 @@ rm -rf /tmp/deck /tmp/palette-decks
 ### Level 2 — a stale skill copy
 
 Symptom: you changed `SKILL.md` or `deck.py` and the agent behaves as before.
-**The agent reads its installed copy, not your working tree.**
+**The agent reads its installed copy, not your working tree.** This is the
+single most common cause of "my fix did nothing".
 
-```bash
-rm -rf ~/code/cuga-agent/.cuga/skills/palette
-make skill-install CUGA=~/code/cuga-agent
-
-# confirm the copy matches your tree
-diff -r ~/code/cuga-agent/.cuga/skills/palette skills/palette
-```
-
-Do the same for Claude Code with `rm -rf ~/.claude/skills/palette && make
-skill-install-claude`. This is the single most common cause of "my fix did
-nothing".
+Run **Stage 2** of §1 — nuke both copies, reinstall, and diff to confirm.
 
 ### Level 3 — the Python environment
 
@@ -177,5 +233,6 @@ make install
 | `error: $PALETTE_HOME=... has no palette.py` | Pointed at the skill folder rather than the checkout. They are different roots. |
 | Agent says "done", no file on disk | It relayed an exit code. `deck.py status` computes `verified` by stat-ing the file — trust that and nothing else. |
 | `status` says `error` seconds after `start`, and the agent starts theorising about missing dependencies | A pre-fix copy of the skill. It probed liveness with `os.kill`, which CUGA's sandbox denies, so it read every live build as dead. Reinstall — level 2 above. A current `deck.py` waits for `.palette-exit`. |
+| The agent keeps asking you to approve the plan, however many times you say yes | It has no memory of earlier turns and nothing told it to look for work already in flight, so it restarts at the confirmation gate every turn. Your deck is probably already built — check with the command below. A current `SKILL.md` opens with **Step 0**, which asks the filesystem first. |
 | Agent stops mid-build | Prose with no code reads as a finished answer. `demo_palette` sets `cuga_lite_nl_auto_continue=true` to prevent it. |
-| Deck exists but looks generic | Check the IBM Plex grep in §3. Something else may have written it. |
+| Deck exists but looks generic | Check the IBM Plex grep in §2. Something else may have written it. |

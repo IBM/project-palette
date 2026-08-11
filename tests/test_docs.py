@@ -95,6 +95,65 @@ def test_no_doc_tells_an_agent_to_block(doc: Path) -> None:
     )
 
 
+def test_the_docs_know_the_workflow_resumes() -> None:
+    """The skill gained a resume check; the docs took an hour to catch up.
+
+    An agent has no memory between turns, so the workflow opens by asking the
+    filesystem whether a build is already running or done. Every doc that
+    describes the polling workflow has to know that, or it teaches a loop where
+    the user approves the plan over and over while a finished deck sits on
+    disk — which is exactly how it was found.
+    """
+    for doc in (REPO_ROOT / "README.md", REPO_ROOT / "skills" / "palette" / "SKILL.md"):
+        flowed = " ".join(doc.read_text(encoding="utf-8").split())
+        assert "already" in flowed, f"{doc.name} never mentions work already in flight"
+        assert "`none`" in flowed or "state is none" in flowed, (
+            f"{doc.name} does not describe the `none` state that makes the check usable"
+        )
+
+
+def test_the_html_guide_is_a_standalone_page() -> None:
+    """`docs/skill-guide.html` is opened from disk or served as a static file.
+
+    It began life as a hosted artifact, where the host supplies the document
+    wrapper and a CSS reset. Copied into the repo without those it renders
+    unstyled and slightly wrong — closing a `</body>` that was never opened —
+    which is exactly the kind of breakage nobody notices until they demo it.
+    """
+    page = (REPO_ROOT / "docs" / "skill-guide.html").read_text(encoding="utf-8")
+    for required in ("<!doctype html>", "<head>", "</head>", "<body>", "</body>", "</html>"):
+        assert required in page, f"the guide is missing {required!r}"
+
+    # No network: it has to render from a checkout with no internet, and a
+    # silently-missing font or stylesheet is worse than an obviously plain page.
+    assert not re.findall(r'(?:src|href)="https?://', page), (
+        "the guide fetches something over the network"
+    )
+    assert "<script" not in page, "the guide should not need scripting"
+
+
+def test_the_html_guide_is_reachable_from_the_readme() -> None:
+    """A page nobody links to is a page nobody opens."""
+    assert "docs/skill-guide.html" in (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("doc", DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_every_doc_names_both_environment_variables(doc: Path) -> None:
+    """Neither variable fails early, and neither fails legibly.
+
+    Without `RITS_API_KEY` a build runs several minutes before dying on a model
+    call. Without `PALETTE_HOME` the skill cannot find the checkout it shells
+    into. Both read as Palette being broken rather than as setup being
+    incomplete, so any doc that tells you how to run something has to name
+    them — a doc that gets you started and omits one has sent you into that.
+    """
+    text = doc.read_text(encoding="utf-8")
+    for variable in ("PALETTE_HOME", "RITS_API_KEY"):
+        assert variable in text, (
+            f"{doc.name} explains how to run Palette without mentioning {variable}"
+        )
+
+
 def test_the_two_skill_files_agree_on_capability() -> None:
     """`SKILL.md` at the root and `skills/palette/SKILL.md` serve different readers.
 

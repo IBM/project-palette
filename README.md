@@ -367,16 +367,51 @@ So completion is a fact on disk, never a return value:
 `--wait` makes `plan` and `edit` block, for a person at a terminal. Agents
 should not use it.
 
+### The state lives on disk, so a new turn can find it
+
+An agent does not reliably remember earlier turns. The user does — which is
+why the failure looks like this from their side: they approve the plan, the
+build starts, and then every turn afterwards the agent asks them to approve it
+again. Saying "yes" cannot break that loop, because the loop is not waiting on
+them. Observed live for 33 minutes with a finished deck in the workspace.
+
+So the workflow opens by asking the filesystem where it already is:
+
+```bash
+python skills/palette/scripts/deck.py status --out-dir ./deck
+```
+
+`none` means nothing has been started here; `running`, `done` and `error` mean
+the confirmation gate is already behind you and the build should be reported
+rather than restarted. `status` answers `none` with exit 0 for exactly this
+reason — a check that errors when the answer is "nothing yet" is not usable as
+a check, which is why nothing ever looked.
+
 ### Keeping the skill honest
 
-`tests/test_skill.py` reads `palette.py`'s argparse setup and fails if the
-skill names a command or flag that does not exist. `make hooks` runs it as a
-pre-commit guard whenever `palette.py` or the skill changes — so the two cannot
-drift without someone noticing.
+Two guards, for the two ways it goes wrong.
+
+**The skill drifting from the CLI it drives.** `tests/test_skill.py` reads
+`palette.py`'s argparse setup and fails if the skill names a command or flag
+that does not exist. `make hooks` runs it as a pre-commit guard whenever
+`palette.py` or the skill changes.
 
 ```bash
 make skill-test
 ```
+
+**The installed copy drifting from this repo.** Agents never read the working
+tree — they read a copy under a skills root, and a copy made before your fix
+is a copy that runs old code. `make verify` compares every installed copy byte
+for byte and names the file that differs:
+
+```bash
+make verify CUGA=<cuga-checkout>          # add DECK=1 to build a real deck too
+```
+
+It takes the locations as input — this checkout, a CUGA checkout, and any
+other skills roots via `SKILLS_ROOTS` — and skips by name for anything it was
+not given.
 
 ## How it's wired
 
@@ -414,6 +449,8 @@ tests/             Contract tests binding the skill to palette.py's CLI
 |---|---|
 | **this file** | you want to run Palette — install, the web UI, config, containers, deployment |
 | [`CHEATSHEET.md`](CHEATSHEET.md) | something is broken and you want to reset it, or you want the test loop in six lines |
+| [`docs/skill-guide.html`](docs/skill-guide.html) | you are showing this to someone — a single page covering try it, test it, and what broke. `open docs/skill-guide.html`, or serve `docs/` anywhere |
+| [`docs/skill-flow-in-cuga.md`](docs/skill-flow-in-cuga.md) | you want to know what actually happens between "build me a deck" and a `.pptx` — discovery, routing, sandbox, completion. Sequence diagram plus the code path |
 | [`SKILL.md`](SKILL.md) | you want the agent-facing instructions on their own |
 | [`skills/palette/SKILL.md`](skills/palette/SKILL.md) | you are looking at what actually ships to a host, including the long-build path |
 | [`skills/palette/scripts/deck.py`](skills/palette/scripts/deck.py) | you need to know how a build survives a step limit |

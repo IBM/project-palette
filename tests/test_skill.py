@@ -270,13 +270,107 @@ class TestDeckHelperBehaviour:
         assert Path(checked["pptx"]).is_absolute(), "a relative path is unusable to the user"
         assert checked["slide_previews"] == 1
 
-    def test_status_without_a_start_refuses_rather_than_guessing(self, tmp_path: Path) -> None:
+    def test_status_on_an_empty_directory_answers_none(self, tmp_path: Path) -> None:
+        """"Nothing here" is an answer, because this is also how you ask.
+
+        This used to exit non-zero with an error, which made it unusable as the
+        "have I already started one?" check — and without that check an agent
+        with no memory of earlier turns re-runs the confirmation gate every
+        turn. Observed live: the user said yes repeatedly for 33 minutes while
+        a finished deck sat in the workspace and `status` was never called
+        again after `start`.
+        """
         result = subprocess.run(
             [sys.executable, str(DECK_PY), "status", "--out-dir", str(tmp_path)],
             capture_output=True, text=True,
         )
-        assert result.returncode != 0
-        assert "no build started" in result.stderr
+        assert result.returncode == 0, "a check that errors cannot be used as a check"
+        payload = json.loads(result.stdout)
+        assert payload["state"] == "none" and payload["done"] is False
+        assert str(tmp_path) in payload["out_dir"], "say which directory you looked in"
+
+    def test_status_is_safe_to_call_before_anything_exists(self, tmp_path: Path) -> None:
+        """Step 0 runs on a workspace that may not have a deck directory yet."""
+        result = subprocess.run(
+            [sys.executable, str(DECK_PY), "status", "--out-dir", str(tmp_path / "deck")],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["state"] == "none"
+
+    def test_find_reports_a_plan_with_no_build(self, tmp_path: Path) -> None:
+        """The half of "where am I" that `status` cannot answer.
+
+        `status` only knows about builds. An agent that forgot it drafted a
+        plan would see `none`, draft another, and silently discard the version
+        the user had already read.
+        """
+        (tmp_path / "plan.md").write_text("# a plan\n")
+        (tmp_path / ".plan.md.plan.json").write_text(json.dumps({"state": "done"}))
+        result = subprocess.run(
+            [sys.executable, str(DECK_PY), "find", "--root", str(tmp_path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        plans = [f for f in payload["found"] if f["kind"] == "plan"]
+        assert len(plans) == 1 and plans[0]["written"] is True
+        assert "no finished deck" in payload["note"]
+
+    def test_find_reports_a_finished_deck(self, tmp_path: Path) -> None:
+        out = tmp_path / "deck"
+        out.mkdir()
+        (out / "deck.pptx").write_bytes(b"x" * 200_000)
+        (out / ".palette-exit").write_text("0\n")
+        (out / ".palette-build.json").write_text(json.dumps({"state": "running", "pid": 1}))
+        result = subprocess.run(
+            [sys.executable, str(DECK_PY), "find", "--root", str(tmp_path)],
+            capture_output=True, text=True,
+        )
+        payload = json.loads(result.stdout)
+        builds = [f for f in payload["found"] if f["kind"] == "build"]
+        assert builds and builds[0]["state"] == "done"
+        assert "1 finished deck" in payload["note"]
+
+    def test_find_is_quiet_about_an_empty_tree(self, tmp_path: Path) -> None:
+        result = subprocess.run(
+            [sys.executable, str(DECK_PY), "find", "--root", str(tmp_path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["found"] == []
+
+    def test_find_needs_no_checkout(self, tmp_path: Path) -> None:
+        """It reads output directories, so it must work with no $PALETTE_HOME.
+
+        The shell loop this replaces exported PALETTE_HOME as though it were
+        needed. It never was, and pretending otherwise makes the check look
+        harder to run than it is.
+        """
+        env = {k: v for k, v in os.environ.items() if k != "PALETTE_HOME"}
+        result = subprocess.run(
+            [sys.executable, str(DECK_PY), "find", "--root", str(tmp_path)],
+            capture_output=True, text=True, env=env,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_the_skill_tells_the_agent_to_look_before_it_asks(self) -> None:
+        """The fix for the confirmation loop, pinned.
+
+        Nothing in the skill used to describe a build that already exists, so
+        every turn started from "ask the user to confirm the plan". The user
+        answering "yes" again could not break the loop, because the loop was
+        not waiting on them.
+        """
+        text = skill_text()
+        assert "Step 0" in text, "the workflow does not begin by checking for existing work"
+        for state in ("none", "running", "done", "error"):
+            assert f"`{state}`" in text, f"step 0 does not say what to do when state is {state}"
+        # Prose wraps, so compare on collapsed whitespace rather than pinning
+        # the line breaks a future edit is free to move.
+        flowed = " ".join(text.split())
+        assert "never ask for that confirmation twice" in flowed
+        assert "repeating themselves means you missed something on disk" in flowed
 
     def test_start_refuses_a_missing_plan(self, tmp_path: Path) -> None:
         result = subprocess.run(
