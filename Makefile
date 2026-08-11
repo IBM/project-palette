@@ -150,6 +150,17 @@ bench: ## Run the CUGA benchmark (make bench CUGA=<path> [CASES=core])
 	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
 	$(CUGA)/.venv/bin/python benchmark/run.py $(if $(CASES),--cases $(CASES),)
 
+bench-claude: ## Prepare the Claude Code run sheet (make bench-claude CUGA=<path> [CASES=corpus])
+	@# Claude Code has no headless CLI here, so this prepares one directory per
+	@# case and prints what to paste; `bench-collect` harvests and judges them
+	@# with exactly the rules the CUGA runner uses.
+	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
+	$(CUGA)/.venv/bin/python benchmark/claude_run.py prepare $(if $(CASES),--cases $(CASES),)
+
+bench-collect: ## Harvest and judge the Claude Code decks
+	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
+	$(CUGA)/.venv/bin/python benchmark/claude_run.py collect
+
 bench-check: ## Verify the benchmark setup without running anything
 	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
 	$(CUGA)/.venv/bin/python benchmark/run.py --check

@@ -246,3 +246,72 @@ class TestTheJudgeCatchesWastefulRuns:
         )
         judge(case, result)
         assert result.ok, result.failures
+
+
+class TestTheCorpus:
+    """The input documents are the benchmark's data, so they must be real.
+
+    Thirteen came out of actual Palette use — all-hands decks, a Q3 review, a
+    competitive brief, an architecture. They live in `benchmark/inputs/` as
+    files rather than string constants so you can drop your own in beside them.
+    """
+
+    def test_the_documents_are_present(self) -> None:
+        from corpus import documents
+
+        found = documents()
+        assert len(found) >= 10, f"only {len(found)} input documents; the corpus is the dataset"
+
+    def test_every_corpus_case_points_at_a_real_file(self) -> None:
+        """A case built from a document that has been deleted is a silent gap."""
+        from corpus import INPUTS
+
+        corpus_cases = [c for c in CASES if "corpus" in c.tags]
+        assert corpus_cases, "no case uses the input corpus"
+        for case in corpus_cases:
+            assert case.context, f"{case.name} is tagged corpus but pastes nothing"
+            assert len(case.context) > 500, (
+                f"{case.name} pastes {len(case.context)} chars — too little to be one of these documents"
+            )
+        assert INPUTS.is_dir()
+
+    def test_there_are_enough_data_points(self) -> None:
+        """The ask was 15-20 decks from real material."""
+        assert len([c for c in CASES if "corpus" in c.tags]) >= 12
+
+    def test_reading_a_missing_document_says_what_exists(self) -> None:
+        from corpus import read
+
+        with pytest.raises(FileNotFoundError, match="Available:"):
+            read("no-such-file.md")
+
+
+class TestBothHostsAreScoredTheSameWay:
+    """Two hosts, one corpus, one judge — otherwise the comparison is theatre."""
+
+    def test_the_claude_runner_imports_the_shared_judge(self) -> None:
+        source = (REPO_ROOT / "benchmark" / "claude_run.py").read_text(encoding="utf-8")
+        assert "from run import" in source and "judge" in source, (
+            "the Claude side scores with its own rules, so its numbers cannot be "
+            "compared with CUGA's"
+        )
+
+    def test_each_host_gets_its_own_directory(self) -> None:
+        run = (REPO_ROOT / "benchmark" / "run.py").read_text(encoding="utf-8")
+        claude = (REPO_ROOT / "benchmark" / "claude_run.py").read_text(encoding="utf-8")
+        assert 'out_root / "cuga"' in run
+        assert 'out_root / "claude"' in claude
+
+    def test_inputs_are_saved_next_to_outputs(self) -> None:
+        """A number without the question attached cannot be reproduced."""
+        for name in ("run.py", "claude_run.py"):
+            source = (REPO_ROOT / "benchmark" / name).read_text(encoding="utf-8")
+            assert '"input"' in source, f"{name} does not save the input it used"
+            assert '"output"' in source, f"{name} does not collect the deck it produced"
+
+    def test_the_claude_runner_detects_rather_than_assumes_a_cli(self) -> None:
+        """There is no `claude` binary on this machine; pretending otherwise
+        would produce a runner that silently does nothing."""
+        source = (REPO_ROOT / "benchmark" / "claude_run.py").read_text(encoding="utf-8")
+        assert "shutil.which" in source
+        assert "falling back to the manual run sheet" in source

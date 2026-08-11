@@ -15,7 +15,13 @@ which is a real failure even though the artifact looks fine.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parent))
+
+from corpus import read, sections  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -255,6 +261,116 @@ CASES: tuple[Case, ...] = (
         expect_slides=4,
         covers="context and an edit together — the edit must not lose the grounding",
         tags=("context", "edit", "multi"),
+    ),
+
+    # ---------------------------------------------------------------- corpus
+    # One per document in benchmark/inputs/. These are the data points: real
+    # material, pasted the way a user pastes it, one deck each. The slide count
+    # is the agent's call, so it is not asserted -- what is asserted is that a
+    # real Palette deck came out and the document reached --context.
+    Case(
+        name="all_hands",
+        request="Turn this into a deck",
+        context=read("all_hands.md"),
+        replies=("yes",),
+        covers="an all-hands deck; long, many short sections",
+        tags=("corpus", "context"),
+    ),
+    Case(
+        name="all_hands_v2",
+        request="Turn this into a deck",
+        context=read("all_hands_v2.md"),
+        replies=("yes",),
+        covers="the same deck rewritten longer — 11KB of pasted text",
+        tags=("corpus", "context"),
+    ),
+    Case(
+        name="benchmark_results",
+        request="Turn this into a deck",
+        context=read("benchmark_jan2026_condensed.md"),
+        replies=("yes",),
+        covers="benchmark numbers; tables and figures that must survive",
+        tags=("corpus", "context"),
+    ),
+    Case(
+        name="credit_exception",
+        request="Turn this into a deck",
+        context=read("credit_exception_agent.md"),
+        replies=("yes",),
+        covers="a one-slide brief with an explicit layout instruction",
+        tags=("corpus", "context"),
+    ),
+    Case(
+        name="hackathon_kickoff",
+        request="Turn this into a deck",
+        context=read("cuga_hackathon_kickoff.md"),
+        replies=("yes",),
+        covers="an event deck: agenda, logistics, calls to action",
+        tags=("corpus", "context"),
+    ),
+    Case(
+        name="sleep_science",
+        request="Turn this into a deck",
+        context=read("example.md"),
+        replies=("yes",),
+        covers="consumer subject, no IBM vocabulary — nothing to pattern-match on",
+        tags=("corpus", "context"),
+    ),
+    Case(
+        name="competitive",
+        request="Turn this into a deck",
+        context=read("ibm_competitive_strategy.md"),
+        replies=("yes",),
+        covers="positioning against named competitors; opinionated content",
+        tags=("corpus", "context"),
+    ),
+    Case(
+        name="architecture",
+        request="Turn this into a deck",
+        context=read("ibm_platform_architecture.md"),
+        replies=("yes",),
+        covers="a reference architecture — diagram-shaped, hard to render",
+        tags=("corpus", "context"),
+    ),
+    Case(
+        name="q3_review",
+        request="Turn this into a deck",
+        context=read("ibm_q3_review.md"),
+        replies=("yes",),
+        covers="a business review: revenue, targets, RAG status",
+        tags=("corpus", "context"),
+    ),
+    Case(
+        name="meta_deck",
+        request="Turn this into a deck",
+        context=read("meta_deck.md"),
+        replies=("yes",),
+        covers="Palette describing itself",
+        tags=("corpus", "context"),
+    ),
+    Case(
+        name="meta_deck_orig",
+        request="Turn this into a deck",
+        context=read("meta_deck_orig.md"),
+        replies=("yes",),
+        covers="an earlier cut of the same deck — a near-duplicate input",
+        tags=("corpus", "context"),
+    ),
+    Case(
+        name="palette_overview",
+        request="Turn this into a deck",
+        context=read("palette.md"),
+        replies=("yes",),
+        covers="the full Palette overview, 9 declared slides",
+        tags=("corpus", "context"),
+    ),
+    Case(
+        name="palette_update",
+        request="Turn this into a deck",
+        context=read("palette_demo.md"),
+        replies=("yes",),
+        covers="a short status readout, 5 declared slides",
+        tags=("corpus", "context"),
     ),
 )
 

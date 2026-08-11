@@ -284,11 +284,20 @@ async def run_case(case: Case, cuga_home: Path, out_root: Path, timeout: int) ->
     from cuga.sdk import CugaAgent
 
     result = CaseResult(case=case)
-    workspace = out_root / case.name
+    workspace = out_root / "cuga" / case.name
     if workspace.exists():
         shutil.rmtree(workspace)
     workspace.mkdir(parents=True)
     result.workspace = workspace
+
+    # Save what went in, beside what comes out. A run you cannot reproduce the
+    # inputs of is a number without a question attached.
+    inputs = workspace / "input"
+    inputs.mkdir()
+    (inputs / "request.txt").write_text(case.request, encoding="utf-8")
+    if case.context:
+        (inputs / "context.md").write_text(case.context, encoding="utf-8")
+    (inputs / "replies.txt").write_text("\n".join(case.replies), encoding="utf-8")
 
     # Inside the sandbox, writes are confined to <cwd>/cuga_workspace. A trace
     # anywhere else is silently denied — which produced a run reporting a real
@@ -363,6 +372,16 @@ async def run_case(case: Case, cuga_home: Path, out_root: Path, timeout: int) ->
     if deck is not None:
         result.pptx = deck
         result.slides, result.has_plex = inspect_deck(deck)
+        # A copy where a person will look, rather than several directories deep
+        # inside a per-thread workspace named after a UUID.
+        output = workspace / "output"
+        output.mkdir(exist_ok=True)
+        shutil.copy2(deck, output / f"{case.name}.pptx")
+        for preview in sorted(deck.parent.glob("*.png")):
+            shutil.copy2(preview, output / preview.name)
+        plan = next(iter(sorted(deck.parent.parent.glob("plan*.md"))), None)
+        if plan is not None:
+            shutil.copy2(plan, output / "plan.md")
 
     judge(case, result)
     return result
