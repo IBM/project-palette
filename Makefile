@@ -43,14 +43,17 @@ install: ## Install Python + Node deps into .venv (creates it if missing)
 	@#  2. `distclean` deletes .venv, and `make install` is what the docs tell
 	@#     you to run next, so it must cope with no venv at all.
 	@#  3. `-r requirements.txt` alone never installs *this package*, so the
-	@#     `palette-skill` console script is missing and every documented
-	@#     command fails with "command not found".
+	@#     `make serve-*` targets lose their supervisor module.
 	@test -x .venv/bin/python || uv venv
 	uv pip install --python .venv/bin/python -e '.[dev]'
 	npm install
 	@echo
 	@echo "installed. activate with:  source .venv/bin/activate"
-	@.venv/bin/palette-skill --version
+	@# Verify the two things the docs actually tell you to run. This used to
+	@# check a console script that had been deleted, so `make install` failed
+	@# at the last line having installed everything correctly.
+	@$(PY) palette.py --help >/dev/null && echo "ok: palette.py"
+	@$(PY) skills/palette/scripts/deck.py --help >/dev/null && echo "ok: the skill's deck.py"
 
 dev: ## Run the server on http://localhost:$(PORT)
 	$(PY) app.py --port $(PORT)

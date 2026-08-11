@@ -74,6 +74,27 @@ def test_no_doc_still_describes_the_http_skill(doc: Path) -> None:
         assert banned not in text, f"{doc.name} still describes the HTTP skill: {banned!r} ({why})"
 
 
+@pytest.mark.parametrize("doc", DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_no_doc_tells_an_agent_to_block(doc: Path) -> None:
+    """Showing `deck.py plan` without `plan-status` teaches the old, broken flow.
+
+    `plan` used to block for the length of a model call. At ~170s inside
+    CUGA's sandbox that outlived the step, the step was killed, and the agent
+    reported a timeout while the plan landed on disk seconds later. It detaches
+    now — but a doc still showing the blocking form would put the failure right
+    back, because the agent follows the doc it can see.
+    """
+    text = doc.read_text(encoding="utf-8")
+    fenced = "\n".join(re.findall(r"```[a-z]*\n(.*?)```", text, re.DOTALL))
+    shows_plan = re.search(r"deck\.py\s+plan\b(?!-)", fenced)
+    if not shows_plan:
+        return
+    assert "plan-status" in fenced or "--wait" in fenced, (
+        f"{doc.name} shows `deck.py plan` but never how to collect it; an agent "
+        "following this blocks on a call a step limit can cut short"
+    )
+
+
 def test_the_two_skill_files_agree_on_capability() -> None:
     """`SKILL.md` at the root and `skills/palette/SKILL.md` serve different readers.
 

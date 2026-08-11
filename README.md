@@ -268,16 +268,50 @@ skills/palette/
 └── scripts/deck.py     starts a long build detached, so a step limit cannot kill it
 ```
 
-### Install it
+### Try it — start here
+
+Two environment variables and one install command, then ask for a deck in
+plain English. **This section is the right pointer for anyone trying the
+skill for the first time**, on either host.
 
 ```bash
-make skill-install CUGA=../cuga-agent-july25   # a CUGA checkout
-make skill-install-claude                      # ~/.claude/skills/palette
-make skill-package                             # dist/palette-skill.tar.gz
+make install                       # once, in this checkout
+export PALETTE_HOME=$PWD           # the checkout holding palette.py
+export RITS_API_KEY=<key>          # every model call; needs the VPN
+```
+
+**Claude Code**
+
+```bash
+make skill-install-claude          # -> ~/.claude/skills/palette
+```
+
+Then, in any Claude Code session: *"Build me a 5-slide deck about RAG."*
+
+**CUGA**
+
+```bash
+make skill-install CUGA=<cuga-checkout>
+```
+
+Then in the CUGA checkout, put `PALETTE_HOME` and `RITS_API_KEY` in its `.env`
+(it is loaded at startup, so it survives a new terminal) and run
+`cuga start demo_palette`.
+
+Either way you get a **plan first, and a question** — approving it is a second
+turn — then a rendered `.pptx`. If something looks wrong, the reset and
+verification recipes are in [`CHEATSHEET.md`](CHEATSHEET.md).
+
+### Other install routes
+
+```bash
+make skill-package                 # dist/palette-skill.tar.gz (8KB)
 ```
 
 A packaged skill is just the folder — `tar xzf palette-skill.tar.gz -C
-<skills-root>/` and it is installed, the same as `npx skills add`.
+<skills-root>/` and it is installed, the same as `npx skills add`. CUGA's own
+catalog carries a pointer to this repo rather than a copy, so `cuga-skills add
+palette` fetches these exact files.
 
 ### What the agent needs
 
@@ -286,28 +320,52 @@ A packaged skill is just the folder — `tar xzf palette-skill.tar.gz -C
 | `PALETTE_HOME` | the checkout holding `palette.py`; the skill cannot guess it |
 | `RITS_API_KEY` | every model call. A sandbox only sees what its parent exports |
 
+Both live in the **environment**, never in the skill folder. Where Palette sits
+is a per-machine fact, like `$JAVA_HOME`; the skill itself is byte-identical on
+every machine, which is what lets the catalog verify it by hash and what keeps
+"one copy, owned by Palette" true. A test enforces it.
+
 ### The workflow the skill enforces
 
 **build-plan → confirm → [edit-plan → confirm] × N → build-deck.** The
 confirmation gate is mandatory: a plan is cheap to change and a rendered deck
 costs minutes, so the agent never builds a plan the user has not approved.
 
-### Long builds and step limits
+### Nothing blocks: every slow command detaches
 
-Rendering takes three to ten minutes — longer than some hosts allow a single
-command to run. Claude Code's `Bash` permits ten minutes, so it calls
-`build-deck` directly. CUGA kills a sandbox step at 120 seconds, so the skill
-starts the build detached and polls:
+Two commands are slow. Drafting a plan is one model call — 43-82s here, ~170s
+inside CUGA's sandbox. Rendering a deck takes three to ten minutes. Both are
+longer than a host may allow a single command to run, so **both detach and are
+collected by polling**:
 
 ```bash
-python skills/palette/scripts/deck.py start  --plan plan.md --out-dir ./deck
-python skills/palette/scripts/deck.py status --out-dir ./deck   # until "done": true
+S=skills/palette/scripts/deck.py
+python $S plan        --request "..." --out plan.md
+python $S plan-status --out plan.md              # until "done": true
+python $S start       --plan plan.md --out-dir ./deck
+python $S status      --out-dir ./deck           # until "done": true
 ```
 
-`status` reports `done` only when `deck.pptx` is on disk and large enough to be
-real — never because a process exited 0. A build that writes nothing has
-failed, and an agent relaying an exit code would announce a deck that does not
-exist.
+This is not defensive over-engineering; it is the failure that actually
+happened, twice. A killed step is **silent**: the work carries on in its own
+process and finishes, and the caller never finds out. Both times the agent
+reported that Palette had failed — once inventing missing dependencies — while
+a good plan and a finished 15-slide deck sat in the workspace.
+
+So completion is a fact on disk, never a return value:
+
+- `status` reports `done` only when `deck.pptx` exists, is large enough to be
+  real, **and** the build has recorded its exit in `.palette-exit`. Palette
+  re-renders the same file two or three times while repairing geometry, so a
+  complete-looking deck appears minutes before the build is over.
+- Liveness is never probed by signalling a process. CUGA's sandbox permits
+  `(signal (target self))` only, so `os.kill` there raises `PermissionError` —
+  which read as "the build died" and failed every sandboxed run on its first
+  poll. Reading a file is allowed everywhere; asking about another process is
+  not.
+
+`--wait` makes `plan` and `edit` block, for a person at a terminal. Agents
+should not use it.
 
 ### Keeping the skill honest
 

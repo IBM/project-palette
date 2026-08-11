@@ -382,6 +382,27 @@ class TestDeckHelperBehaviour:
         assert result["state"] == "error" and result["exit_code"] == 1
         assert result["verified"] is False
 
+    def test_the_shipped_skill_is_the_same_on_every_machine(self) -> None:
+        """No absolute path, no host config, nothing generated at install time.
+
+        This is the line between "configuration" and an anti-pattern. Where
+        Palette lives is a per-machine fact, so it belongs in the environment
+        (`$PALETTE_HOME`) exactly like `$JAVA_HOME` — never baked into the
+        skill. If installing wrote a path in here, every install would produce
+        a different folder: the `dirHash` in the cuga-skills catalog could not
+        verify, the tarball would be machine-specific, and "one copy, owned by
+        Palette" would quietly become one copy per machine.
+        """
+        for path in sorted(SKILL_DIR.rglob("*")):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for marker in ("/Users/", "/home/", "/opt/homebrew", "/private/tmp"):
+                assert marker not in text, (
+                    f"{path.name} contains the machine-specific path {marker!r}; "
+                    "the shipped skill must be byte-identical everywhere"
+                )
+
     def test_the_plan_step_does_not_block(self) -> None:
         """`plan` returns at once, because the model call outlives a step.
 
