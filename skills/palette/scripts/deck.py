@@ -284,6 +284,22 @@ def _start_plan(home: Path, argv: list[str], out: Path, label: str, hold: int) -
     come back in this one call. Slow ones degrade into the polling path rather
     than dying.
     """
+    # Already drafting this plan? Collect it instead of starting a second one.
+    #
+    # When the hold expires the agent gets `state: running` and a `next` telling
+    # it to poll -- and re-runs `plan` anyway, because re-running is the thing it
+    # just did and knows how to do. Measured: plan twice, then edit twice, and a
+    # 4-slide deck for a request that said 3, because two writers raced the same
+    # file. `start` has guarded against this since the beginning; this is the
+    # same guard for the plan, and prose was never going to be the fix.
+    previous = _load(_sidecar(out, "plan.json"))
+    if (
+        previous
+        and _finished_at(_sidecar(out, "plan.exit")) is None
+        and _alive(previous.get("pid", -1)) is not False
+    ):
+        return plan_status(argparse.Namespace(out=str(out), hold_seconds=hold))
+
     process = _detach(home, argv, _sidecar(out, "plan.log"), _sidecar(out, "plan.exit"))
     state = {
         "state": "running", "stage": label, "pid": process.pid,
@@ -302,7 +318,8 @@ def _start_plan(home: Path, argv: list[str], out: Path, label: str, hold: int) -
     print(json.dumps({
         **state,
         "elapsed_seconds": int(time.time()) - state["started_at"],
-        "note": f"{label} is slower than usual; collect it with `deck.py plan-status`",
+        "note": (f"{label} is still running — do NOT run {label.split('-')[0]} again, "
+                 f"it would start a second one. Collect this one with plan-status."),
         "next": f"python {Path(__file__).name} plan-status --out {out}",
     }, indent=2))
     return 0
@@ -324,11 +341,42 @@ def plan(args: argparse.Namespace) -> int:
 
 
 def plan_status(args: argparse.Namespace) -> int:
-    """Has the plan (or edit) landed? Same filesystem-only test as the build."""
+    """Has the plan (or edit) landed? Same filesystem-only test as the build.
+
+    Holds the call open rather than answering instantly. Every poll is an agent
+    turn -- a model round trip -- and an agent that can poll for free polls as
+    fast as it can: one measured run spent 43 turns on `plan-status`, all
+    returning in 0.0s, before it got to the build. Waiting here turns those
+    into two or three.
+    """
     out = Path(args.out).expanduser().resolve()
     state = _load(_sidecar(out, "plan.json"))
     if not state:
-        raise SystemExit(f"error: no plan started for {out} — run `deck.py plan` first")
+        # Answer, and say where the real plans are. Raising here produced a
+        # tight loop: an agent polled `--out ./skills/palette/SKILL.md` twenty
+        # three times, each failing instantly, because nothing in the refusal
+        # told it which path it should have used. A wrong path is a question,
+        # not a crash.
+        nearby = sorted(
+            str(sidecar.parent / sidecar.name[1:-len(".plan.json")])
+            for sidecar in Path.cwd().rglob(".*.plan.json")
+        )
+        print(json.dumps({
+            "state": "none", "done": False, "asked_about": str(out),
+            "note": f"no plan was started for {out}",
+            "plans_here": nearby,
+            "next": (
+                f"python {Path(__file__).name} plan-status --out {nearby[0]}"
+                if nearby else
+                f"python {Path(__file__).name} plan --request '<request>' --out plan.md"
+            ),
+        }, indent=2))
+        return 0
+
+    hold = max(0, getattr(args, "hold_seconds", 0))
+    deadline = time.time() + hold
+    while time.time() < deadline and _finished_at(_sidecar(out, "plan.exit")) is None:
+        time.sleep(2)
 
     exit_code = _finished_at(_sidecar(out, "plan.exit"))
     elapsed = int(time.time()) - int(state.get("started_at", time.time()))
@@ -435,6 +483,15 @@ def status(args: argparse.Namespace) -> int:
         }, indent=2))
         return 0
 
+    # Hold, for the same reason `plan-status` does: an agent polling for free
+    # polls in a tight loop and spends its step budget on round trips that say
+    # "still running". A build is minutes, so waiting a minute per call costs
+    # nothing and collapses thirty turns into a handful.
+    hold = max(0, getattr(args, "hold_seconds", 0))
+    deadline = time.time() + hold
+    while time.time() < deadline and _finished(out_dir) is None:
+        time.sleep(3)
+
     checked = verify(out_dir)
     exit_code = _finished(out_dir)
     elapsed = int(time.time()) - int(state.get("started_at", time.time()))
@@ -515,6 +572,8 @@ def main(argv: list[str] | None = None) -> int:
 
     ps = sub.add_parser("plan-status", help="is the plan (or edit) written yet?")
     ps.add_argument("--out", required=True, help="the --out you passed to plan or edit")
+    ps.add_argument("--hold-seconds", type=int, default=60,
+                    help="wait this long for it to finish before answering (default 60)")
     ps.set_defaults(func=plan_status)
 
     ed = sub.add_parser("edit", help="apply a requested change to an existing plan")
@@ -534,6 +593,8 @@ def main(argv: list[str] | None = None) -> int:
 
     q = sub.add_parser("status", help="is it done? poll until state is done or error")
     q.add_argument("--out-dir", required=True)
+    q.add_argument("--hold-seconds", type=int, default=60,
+                    help="wait this long for it to finish before answering (default 60)")
     q.set_defaults(func=status)
 
     fd = sub.add_parser("find", help="every plan and build under a root — 'where did my deck go?'")
@@ -541,7 +602,72 @@ def main(argv: list[str] | None = None) -> int:
     fd.set_defaults(func=find)
 
     args = parser.parse_args(argv)
-    return args.func(args)
+    if not os.environ.get("PALETTE_TRACE", "").strip():
+        return args.func(args)
+    return _traced(args)
+
+
+def _traced(args: argparse.Namespace) -> int:
+    """Run the command, appending what went in and what came out to $PALETTE_TRACE.
+
+    Off unless the variable is set, so it costs nothing in normal use. It exists
+    for the benchmark harness: when a run produces a wrong deck, the question is
+    always "what did the agent actually ask Palette for", and the agent's own
+    account of that is a paraphrase at best.
+
+    Never let tracing break the command it is tracing — a benchmark that changes
+    the thing it measures is worse than no benchmark.
+    """
+    import io
+    from contextlib import redirect_stdout
+
+    started = time.time()
+    buffer = io.StringIO()
+    try:
+        with redirect_stdout(buffer):
+            code = args.func(args)
+    except SystemExit as exc:  # argparse-style refusals are a real outcome
+        code = int(exc.code) if isinstance(exc.code, int) else 1
+        printed = buffer.getvalue()
+        _append_trace(args, printed, code, started, time.time() - started, error=str(exc))
+        sys.stdout.write(printed)
+        raise
+    printed = buffer.getvalue()
+    sys.stdout.write(printed)
+    _append_trace(args, printed, code, started, time.time() - started)
+    return code
+
+
+def _append_trace(args, printed: str, code: int, started: float, seconds: float, error: str = "") -> None:
+    path = Path(os.environ["PALETTE_TRACE"]).expanduser()
+    # Long free text is what the agent chose to send; it is the interesting part,
+    # but a whole pasted document would swamp the trace. Keep the head and say so.
+    def clip(value, limit=600):
+        if not isinstance(value, str) or len(value) <= limit:
+            return value
+        return value[:limit] + f"… [+{len(value) - limit} chars]"
+
+    payload = {
+        "at": round(started, 3),
+        "command": args.command,
+        "args": {
+            k: clip(v)
+            for k, v in vars(args).items()
+            if k not in {"func", "command"} and v is not None
+        },
+        "seconds": round(seconds, 2),
+        "exit_code": code,
+        "stdout": clip(printed, 4000),
+    }
+    if error:
+        payload["error"] = error
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload) + "\n")
+    except OSError:
+        pass  # tracing must never break the command
+
 
 
 if __name__ == "__main__":

@@ -1,11 +1,14 @@
 ---
 name: palette
 description: >-
-  Create, revise, and render slide decks (PowerPoint .pptx) from a
-  natural-language request or pasted material. Use whenever the user wants to
-  build a presentation / deck / slides, turn notes or a document into slides,
-  or change a deck they are working on. Works in two reviewable steps — a
-  markdown plan the user approves, then a rendered .pptx.
+  REQUIRED for every request that produces slides — "build me a deck", "make a
+  presentation", "turn these notes into slides", "5 slides on X", "put
+  something together explaining X" — and for every change to a deck already in
+  progress ("make it 3 slides", "more casual", "fix slide 2"). Do NOT write
+  .pptx files yourself with pptxgenjs, python-pptx, or OOXML: this skill is the
+  only supported way to produce one, and a hand-written deck is missing the
+  brand typography and layout the user expects. Produces a markdown plan the
+  user approves, then renders the .pptx.
 ---
 
 # Palette — slide deck builder
@@ -20,6 +23,25 @@ reviewable steps:
 the cheap place to iterate; the deck build renders every slide and takes
 minutes, so you do not want to build from an unapproved plan.
 
+## You do not write the plan, and you do not write the deck
+
+`deck.py plan` writes the plan. `deck.py start` renders the deck. Your job is
+to run them, show the user what came back, and pass their reply through.
+
+**Never draft an outline yourself and present it as the plan.** It is not the
+plan: `build-deck` renders whatever is in `plan.md`, so a plan you wrote in
+chat is something the user approves and never receives. Observed — an agent
+loaded this skill, wrote a two-slide outline in prose, asked for approval, and
+never ran a single command.
+
+The same goes for the deck: no `pptxgenjs`, no `python-pptx`, no OOXML. If
+Palette cannot run, say so and stop. A hand-made deck is worse than none,
+because it looks like success.
+
+If a command fails, relay its error verbatim. Do not describe a failure you did
+not see — an agent that had run nothing reported a sandbox permission error it
+had invented, and the user believed the tool was broken.
+
 ## Setup
 
 Every command goes through one script, `scripts/deck.py`, which lives beside
@@ -27,13 +49,16 @@ this file. It finds the Palette checkout, runs `palette.py` from there, and
 puts the output where you asked — so you never change directory and never need
 a path into the checkout.
 
-It needs to know where Palette is:
+Two environment variables have to be set — `$PALETTE_HOME` (the checkout
+containing `palette.py`) and `$RITS_API_KEY` (model access).
 
-- `$PALETTE_HOME` — the checkout containing `palette.py`.
-- `$RITS_API_KEY` — model access. Every command needs it.
+**Never ask the user for them, and never check them first.** They are set in
+the environment you are already running in, and you cannot see it from here.
+Just run the command. If one really is missing, the first command fails
+immediately with the exact variable named — relay that message and stop.
 
-If either is missing the first command says so exactly. Relay that to the user
-and stop; you cannot fix it from here.
+Asking costs the user a turn to answer a question about something that was
+already configured, and the answer would not help you set it anyway.
 
 Call the script by its path inside this skill folder. On most hosts that is:
 

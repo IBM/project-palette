@@ -450,6 +450,7 @@ tests/             Contract tests binding the skill to palette.py's CLI
 | **this file** | you want to run Palette — install, the web UI, config, containers, deployment |
 | [`CHEATSHEET.md`](CHEATSHEET.md) | something is broken and you want to reset it, or you want the test loop in six lines |
 | [`docs/skill-guide.html`](docs/skill-guide.html) | you are showing this to someone — a single page covering try it, test it, and what broke. `open docs/skill-guide.html`, or serve `docs/` anywhere |
+| [`benchmark/README.md`](benchmark/README.md) | you want to measure the skill: 20 scripted conversations through CUGA's SDK, with every Palette call traced |
 | [`docs/skill-flow-in-cuga.md`](docs/skill-flow-in-cuga.md) | you want to know what actually happens between "build me a deck" and a `.pptx` — discovery, routing, sandbox, completion. Sequence diagram plus the code path |
 | [`SKILL.md`](SKILL.md) | you want the agent-facing instructions on their own |
 | [`skills/palette/SKILL.md`](skills/palette/SKILL.md) | you are looking at what actually ships to a host, including the long-build path |

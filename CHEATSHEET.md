@@ -210,7 +210,65 @@ hours earlier:
 rm -rf /tmp/.venv                  # CUGA recreates it on next start
 ```
 
-### Level 4 — everything not tracked by git
+### Level 4 — full rebuild, both repos, from nothing
+
+The complete reset: both virtualenvs, node modules, caches, sandbox state,
+installed skills. Roughly **15 minutes** and ~2GB of downloads.
+
+> **Commit first, and check.** `git clean -fdx` deletes untracked files, and
+> untracked includes whole directories you have not added yet. Run this in each
+> repo and read it:
+>
+> ```bash
+> git status --short          # ?? lines are what you are about to lose
+> git clean -ndx | head -40   # DRY RUN — the actual list
+> ```
+>
+> Save `RITS_API_KEY` somewhere too, if it only lives in a `.env`.
+
+```bash
+P=~/code/project-palette;  C=~/code/cuga-agent
+
+# 1. stop everything
+pkill -f "bin/cuga start"; pkill -f "palette.py build-deck"
+for port in 7860 8001; do lsof -ti :$port | xargs -r kill; done
+
+# 2. remove the installed skill copies (they are rebuilt in step 6)
+rm -rf $C/.cuga/skills/palette ~/.claude/skills/palette
+
+# 3. the sandbox's own venv — separate from both repos, and a stale one
+#    has served code that was deleted hours earlier
+rm -rf /tmp/.venv
+
+# 4. Palette: environment and everything untracked
+cd $P
+git clean -fdx                     # after reading the dry run above
+uv venv
+make install                       # -> "ok: palette.py" and "ok: the skill's deck.py"
+
+# 5. CUGA: same
+cd $C
+git clean -fdx -e .env             # KEEP .env — it holds your keys
+uv venv --python=3.12
+uv sync
+
+# 6. reinstall the skill into both hosts
+cd $P
+make skill-install CUGA=$C
+make skill-install-claude
+```
+
+Then verify before trusting anything — §1 Stage 1 and Stage 2:
+
+```bash
+(cd $P && .venv/bin/python -m pytest tests/ -q)     # ~180 passed
+make -C $P verify CUGA=$C                            # 12 passed
+```
+
+`-e .env` on CUGA's clean is not optional: `.env` is untracked, holds
+`RITS_API_KEY` and `PALETTE_HOME`, and cannot be rebuilt from source.
+
+### Level 4b — everything not tracked by git, one repo
 
 The nuclear option. Prints what it would delete first.
 

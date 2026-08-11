@@ -144,6 +144,16 @@ skill-package: ## Package the skill as dist/palette-skill.tar.gz (droppable into
 skill-test: ## Check the skill is self-consistent (no server, no network)
 	$(PY) -m pytest tests/test_skill.py -q
 
+bench: ## Run the CUGA benchmark (make bench CUGA=<path> [CASES=core])
+	@# Runs under CUGA's interpreter, not ours: the harness drives CUGA and
+	@# needs its dependencies. Everything else it needs is checked by --check.
+	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
+	$(CUGA)/.venv/bin/python benchmark/run.py $(if $(CASES),--cases $(CASES),)
+
+bench-check: ## Verify the benchmark setup without running anything
+	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
+	$(CUGA)/.venv/bin/python benchmark/run.py --check
+
 verify: ## Check the skill where agents read it (make verify CUGA=<path> [DECK=1])
 	@# Takes the three locations as input: this checkout, a CUGA checkout, and
 	@# any other skills roots. Skips by name for anything it was not given, so

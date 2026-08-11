@@ -192,7 +192,7 @@ class TestLongBuildsSurviveAStepLimit:
             _json.dumps({"state": "running", "pid": 1, "started_at": started,
                          "log": str(tmp_path / "build.log"), "out_dir": str(tmp_path)})
         )
-        out = _sp.run([sys.executable, str(DECK_PY), "status", "--out-dir", str(tmp_path)],
+        out = _sp.run([sys.executable, str(DECK_PY), "status", "--out-dir", str(tmp_path), "--hold-seconds", "0"],
                       capture_output=True, text=True)
         payload = _json.loads(out.stdout)
         assert payload["done"] is True
@@ -331,7 +331,7 @@ class TestDeckHelperBehaviour:
         again after `start`.
         """
         result = subprocess.run(
-            [sys.executable, str(DECK_PY), "status", "--out-dir", str(tmp_path)],
+            [sys.executable, str(DECK_PY), "status", "--out-dir", str(tmp_path), "--hold-seconds", "0"],
             capture_output=True, text=True,
         )
         assert result.returncode == 0, "a check that errors cannot be used as a check"
@@ -342,7 +342,7 @@ class TestDeckHelperBehaviour:
     def test_status_is_safe_to_call_before_anything_exists(self, tmp_path: Path) -> None:
         """Step 0 runs on a workspace that may not have a deck directory yet."""
         result = subprocess.run(
-            [sys.executable, str(DECK_PY), "status", "--out-dir", str(tmp_path / "deck")],
+            [sys.executable, str(DECK_PY), "status", "--out-dir", str(tmp_path / "deck"), "--hold-seconds", "0"],
             capture_output=True, text=True,
         )
         assert result.returncode == 0
@@ -438,7 +438,7 @@ class TestDeckHelperBehaviour:
              "out_dir": str(out_dir), "started_at": int(time.time()) - 90}
         ))
         result = subprocess.run(
-            [sys.executable, str(DECK_PY), "status", "--out-dir", str(out_dir)],
+            [sys.executable, str(DECK_PY), "status", "--out-dir", str(out_dir), "--hold-seconds", "0"],
             capture_output=True, text=True,
         )
         return json.loads(result.stdout)
@@ -636,3 +636,144 @@ class TestPaletteHomeResolution:
         deck.py exists so nobody has to hold both facts at once.
         """
         assert "Do not run `palette.py` yourself" in skill_text()
+
+
+class TestTheAgentDoesNotStallOnSetup:
+    """Observed in the benchmark: the agent asked the user for $PALETTE_HOME
+    and $RITS_API_KEY and stopped, with both already set in its environment.
+
+    A sandboxed agent cannot read the parent environment, so "check the
+    variables first" is not a thing it can do — it can only ask, which costs
+    the user a turn and produces an answer that helps nobody. The command
+    itself already fails with the variable named.
+    """
+
+    def test_the_skill_forbids_asking_for_the_variables(self) -> None:
+        flowed = " ".join(skill_text().split())
+        assert "Never ask the user for them" in flowed
+        assert "never check them first" in flowed
+
+    def test_the_skill_says_to_just_run_it(self) -> None:
+        flowed = " ".join(skill_text().split())
+        assert "Just run the command" in flowed, (
+            "nothing tells the agent what to do instead of asking"
+        )
+
+    def test_the_failure_path_is_still_documented(self) -> None:
+        """Not asking is only safe because the command reports it clearly."""
+        flowed = " ".join(skill_text().split())
+        assert "relay that message and stop" in flowed
+
+
+class TestASecondPlanIsNeverStarted:
+    """Measured: `plan` twice, then `edit` twice, and a 4-slide deck for a
+    request that said 3 — two writers racing the same file.
+
+    When the hold expires the agent is told to poll, and re-runs the command
+    instead, because re-running is what it just did and knows how to do. The
+    build path has guarded against this from the start; this is the same guard
+    for the plan.
+    """
+
+    def _module(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("deck_guard", DECK_PY)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_a_live_plan_is_collected_not_restarted(self, tmp_path: Path) -> None:
+        plan = tmp_path / "plan.md"
+        # A real process whose command line looks like a build, so _alive says
+        # "ours" rather than guessing.
+        fake = tmp_path / "palette.py"
+        fake.write_text("import time\ntime.sleep(30)\n")
+        running = subprocess.Popen([sys.executable, str(fake), "build-plan"])
+        try:
+            (tmp_path / ".plan.md.plan.json").write_text(
+                json.dumps({"state": "running", "pid": running.pid,
+                            "plan": str(plan), "started_at": int(time.time())})
+            )
+            module = self._module()
+            import argparse as _ap
+
+            called = []
+            module.plan_status = lambda args: called.append(args) or 0
+            module._detach = lambda *a, **k: pytest.fail("a second plan was started")
+
+            module._start_plan(tmp_path, ["build-plan", "x"], plan, "build-plan", 0)
+            assert called, "a running plan was neither collected nor started"
+        finally:
+            running.kill()
+            running.wait()
+
+    def test_the_handoff_tells_the_agent_not_to_rerun(self) -> None:
+        source = DECK_PY.read_text(encoding="utf-8")
+        assert "do NOT run" in source, (
+            "the running response does not warn against re-running the command"
+        )
+
+
+class TestAWrongPathIsSelfCorrecting:
+    """Measured: the agent polled `--out ./skills/palette/SKILL.md` twenty-three
+    times. Each call raised instantly, so retrying was free, and nothing in the
+    refusal said which path it should have used.
+
+    A wrong argument is a question the tool can answer — it knows where the
+    plans are — so it answers instead of crashing.
+    """
+
+    def test_it_names_the_plans_that_do_exist(self, tmp_path: Path) -> None:
+        real = tmp_path / "work"
+        real.mkdir()
+        (real / "plan.md").write_text("# plan\n")
+        (real / ".plan.md.plan.json").write_text(json.dumps({"state": "done"}))
+
+        result = subprocess.run(
+            [sys.executable, str(DECK_PY), "plan-status",
+             "--out", str(tmp_path / "SKILL.md"), "--hold-seconds", "0"],
+            capture_output=True, text=True, cwd=str(tmp_path),
+        )
+        assert result.returncode == 0, "a wrong path must not be a hard failure"
+        payload = json.loads(result.stdout)
+        assert payload["state"] == "none"
+        assert any("plan.md" in p for p in payload["plans_here"]), (
+            "it did not point at the plan that actually exists"
+        )
+        assert "plan.md" in payload["next"]
+
+    def test_it_suggests_starting_one_when_there_are_none(self, tmp_path: Path) -> None:
+        result = subprocess.run(
+            [sys.executable, str(DECK_PY), "plan-status",
+             "--out", str(tmp_path / "nope.md"), "--hold-seconds", "0"],
+            capture_output=True, text=True, cwd=str(tmp_path),
+        )
+        payload = json.loads(result.stdout)
+        assert payload["plans_here"] == []
+        assert "deck.py plan --request" in payload["next"]
+
+
+class TestTheAgentDoesNotSubstituteItself:
+    """Measured: the agent loaded the skill, wrote a two-slide outline in prose,
+    asked for approval, and never ran a command — then reported a permission
+    error it had invented.
+
+    An outline written in chat is not the plan. `build-deck` renders `plan.md`,
+    so the user approves one artifact and receives a different one.
+    """
+
+    def test_writing_the_plan_yourself_is_forbidden(self) -> None:
+        flowed = " ".join(skill_text().split())
+        assert "You do not write the plan" in flowed
+        assert "Never draft an outline yourself" in flowed
+
+    def test_it_says_why_rather_than_just_forbidding(self) -> None:
+        """A rule with a reason survives paraphrase; a bare prohibition does not."""
+        flowed = " ".join(skill_text().split())
+        assert "renders whatever is in `plan.md`" in flowed
+
+    def test_inventing_a_failure_is_forbidden(self) -> None:
+        flowed = " ".join(skill_text().split())
+        assert "relay its error verbatim" in flowed
+        assert "Do not describe a failure you did not see" in flowed
