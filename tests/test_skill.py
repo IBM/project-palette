@@ -242,6 +242,56 @@ class TestLongBuildsSurviveAStepLimit:
         assert not third_party, f"deck.py imports non-stdlib modules: {sorted(third_party)}"
 
 
+class TestReadingTheUsersReply:
+    """After the plan is shown, the next message decides everything.
+
+    A deck is inherently multi-turn: plan, ask, and then whatever the user
+    says. "Yes" is only one of the things they say, and the expensive mistakes
+    are all in the other three — building on a conditional yes, re-planning
+    when they wanted an edit, or building a revision nobody approved.
+    """
+
+    @pytest.fixture
+    def flowed(self) -> str:
+        return " ".join(skill_text().split())
+
+    def test_all_four_kinds_of_reply_are_covered(self, flowed: str) -> None:
+        for phrase, why in (
+            ("Approval", "no rule for the reply that builds"),
+            ("A change", "no rule for an edit instruction"),
+            ("A question", "a question about the plan has no handling and may build"),
+            ("A different deck", "a new topic would be edited into the old plan"),
+        ):
+            assert phrase in flowed, f"{why}"
+
+    def test_a_conditional_yes_is_an_edit(self, flowed: str) -> None:
+        """"Yes, but make it shorter" builds the deck they just rejected."""
+        assert "is a change, not an approval" in flowed
+        assert "condition" in flowed
+
+    def test_the_instruction_is_passed_verbatim(self, flowed: str) -> None:
+        """edit-plan is a model call; a paraphrase loses what they asked for."""
+        assert "verbatim" in flowed
+        assert "not your summary of it" in flowed
+
+    def test_an_edit_returns_to_the_gate(self, flowed: str) -> None:
+        """A revised plan is an unapproved plan."""
+        assert "Never build straight after an edit" in flowed
+        assert "back to step 2" in flowed
+
+    def test_pasted_material_after_a_plan_is_an_edit(self, flowed: str) -> None:
+        """Otherwise the agent re-plans and discards the reviewed version."""
+        assert "If they paste material after a plan exists" in flowed
+
+    def test_only_approval_reaches_the_build(self) -> None:
+        """The table must not offer `start` as an outcome of anything else."""
+        table = skill_text().split("| They said |")[1].split("\n\n")[0]
+        rows = [r for r in table.splitlines() if r.strip().startswith("|")]
+        starts = [r for r in rows if "`start`" in r]
+        assert len(starts) == 1, f"{len(starts)} rows reach the build; exactly one should"
+        assert "Approval" in starts[0]
+
+
 class TestDeckHelperBehaviour:
     """The parts that decide whether a deck is reported as real."""
 
@@ -497,24 +547,41 @@ class TestDeckHelperBehaviour:
                     "the shipped skill must be byte-identical everywhere"
                 )
 
-    def test_the_plan_step_does_not_block(self) -> None:
-        """`plan` returns at once, because the model call outlives a step.
+    def test_the_plan_step_cannot_be_cut_short(self) -> None:
+        """`plan` detaches, so a capped step can never kill the work.
 
-        Measured 43-82s locally and ~170s inside CUGA's sandbox, against a
+        Measured 43-82s locally and 105-170s inside CUGA's sandbox, against a
         120s step. When the step was cut short the agent reported that Palette
         had timed out and gave up — while `plan.md`, a perfectly good 72-line
         plan, was written to the workspace a few seconds later.
-
-        So the plan detaches exactly like the build, and `--wait` exists only
-        for a person at a terminal.
         """
         source = DECK_PY.read_text()
-        assert "def plan_status" in source, "no way to collect a detached plan"
+        assert "def plan_status" in source, "no way to collect a slow plan"
         assert "_start_plan" in source
         skill = skill_text()
-        assert "deck.py plan-status" in skill, "SKILL.md never tells the agent to collect it"
-        assert "--wait" not in skill.split("## Workflow")[1], (
-            "the workflow tells the agent to block on a call a step limit can cut short"
+        assert "plan-status" in skill, "SKILL.md never says how to collect a slow plan"
+
+    def test_the_plan_step_does_not_cost_a_poll_per_turn(self) -> None:
+        """...but it must not be *polled* either, which is the other failure.
+
+        A plan is one model call. Detaching and polling it costs an agent turn
+        per poll — eight round trips for a 160s plan — and those turns come out
+        of the same step budget the build needs later. So `plan` holds the call
+        open first, and only hands back to `plan-status` if that runs out.
+        """
+        source = DECK_PY.read_text()
+        assert "hold_seconds" in source, "there is no bounded wait; every plan is polled"
+        assert "def _start_plan" in source
+        body = source[source.index("def _start_plan") : source.index("\ndef plan(")]
+        assert "_finished_at" in body, "the hold does not check for completion"
+        assert "plan_status(" in body, (
+            "a plan that finishes inside the hold should return the same payload "
+            "plan-status would, so the agent needs no second call"
+        )
+
+        flowed = " ".join(skill_text().split())
+        assert "usually answers in one call" in flowed, (
+            "SKILL.md still teaches the agent to poll for every plan"
         )
 
     def test_every_slow_command_records_its_exit_code(self) -> None:

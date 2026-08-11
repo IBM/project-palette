@@ -12,13 +12,22 @@ Both real failures in the wild were exactly this — an agent reported that
 Palette had timed out and gave up, while a good plan and a good 15-slide deck
 sat finished in the workspace.
 
-So nothing here blocks. Every slow command detaches and is collected by
-polling:
+So nothing here can be killed part-way. Both slow commands detach; how they
+are collected differs, because the two are not the same shape of wait.
 
-    python scripts/deck.py plan        --request "..." --out plan.md
-    python scripts/deck.py plan-status --out plan.md          # until done
-    python scripts/deck.py start       --plan plan.md --out-dir ./deck
-    python scripts/deck.py status      --out-dir ./deck        # until done
+    python scripts/deck.py plan   --request "..." --out plan.md
+    python scripts/deck.py start  --plan plan.md --out-dir ./deck
+    python scripts/deck.py status --out-dir ./deck             # until done
+
+A plan is ONE model call, so `plan` holds the call open for up to 90 seconds
+and usually returns the finished plan itself. Polling it would cost an agent
+turn per poll -- eight round trips for a 160s plan -- and those turns come out
+of the same step budget the build needs later. Only a slow plan falls back to
+`plan-status`.
+
+A build is minutes of rendering, which no step limit will ever cover, so
+`start` returns at once and `status` is polled throughout. Polling is right
+there: the alternative is not a shorter wait, it is no wait at all.
 
 Each prints one JSON object. Completion is computed from the filesystem, never
 from an exit code: a build that exits 0 having written nothing is a failure,
@@ -257,19 +266,45 @@ def find(args: argparse.Namespace) -> int:
     return 0
 
 
-def _start_plan(home: Path, argv: list[str], out: Path, label: str) -> int:
-    """Kick off a plan or an edit detached, and say how to collect it."""
+def _start_plan(home: Path, argv: list[str], out: Path, label: str, hold: int) -> int:
+    """Detach, then hold the call open for up to *hold* seconds.
+
+    A plan is one model call. Polling for it costs an agent turn per poll --
+    eight turns for a 160s plan -- and each turn is a model round trip that
+    also eats the step budget the build needs later. So do not poll for it if
+    it can be avoided.
+
+    But it cannot simply block either: measured at 43-82s in a shell and
+    105-170s inside CUGA's sandbox, against a 120s step. A blocking call gets
+    killed part-way, and a killed step says nothing about whether the work
+    succeeded -- a real session reported "the palette script timed out" while a
+    perfectly good plan landed on disk seconds later.
+
+    So: wait, but bounded, under the tightest step limit we know of. Most plans
+    come back in this one call. Slow ones degrade into the polling path rather
+    than dying.
+    """
     process = _detach(home, argv, _sidecar(out, "plan.log"), _sidecar(out, "plan.exit"))
     state = {
         "state": "running", "stage": label, "pid": process.pid,
         "plan": str(out), "started_at": int(time.time()),
     }
     _sidecar(out, "plan.json").write_text(json.dumps(state, indent=2))
+
+    deadline = time.time() + max(0, hold)
+    while time.time() < deadline:
+        if _finished_at(_sidecar(out, "plan.exit")) is not None:
+            # Finished inside the call. Report it the way plan-status would,
+            # so the agent never has to make a second round trip.
+            return plan_status(argparse.Namespace(out=str(out)))
+        time.sleep(2)
+
     print(json.dumps({
         **state,
-        "note": f"{label} takes 40-180s; poll with `deck.py plan-status`",
+        "elapsed_seconds": int(time.time()) - state["started_at"],
+        "note": f"{label} is slower than usual; collect it with `deck.py plan-status`",
         "next": f"python {Path(__file__).name} plan-status --out {out}",
-    }))
+    }, indent=2))
     return 0
 
 
@@ -285,7 +320,7 @@ def plan(args: argparse.Namespace) -> int:
         argv += ["--source", str(Path(source).expanduser().resolve())]
     if args.wait:
         return _relay(_run_palette(home, argv))
-    return _start_plan(home, argv, out, "build-plan")
+    return _start_plan(home, argv, out, "build-plan", args.hold_seconds)
 
 
 def plan_status(args: argparse.Namespace) -> int:
@@ -336,7 +371,7 @@ def edit(args: argparse.Namespace) -> int:
         return _relay(_run_palette(home, argv))
     # An edit is the same shape of model call as a plan -- 54s measured, and
     # subject to the same step limit -- so it collects the same way.
-    return _start_plan(home, argv, out, "edit-plan")
+    return _start_plan(home, argv, out, "edit-plan", args.hold_seconds)
 
 
 def start(args: argparse.Namespace) -> int:
@@ -473,6 +508,9 @@ def main(argv: list[str] | None = None) -> int:
     pl.add_argument("--wait", action="store_true",
                     help="block until done (40-180s) instead of detaching; for a terminal, "
                          "not for an agent whose step can be cut short")
+    pl.add_argument("--hold-seconds", type=int, default=90,
+                    help="how long to hold the call open waiting for the plan before "
+                         "handing back to plan-status (default 90, under a 120s step)")
     pl.set_defaults(func=plan)
 
     ps = sub.add_parser("plan-status", help="is the plan (or edit) written yet?")
@@ -484,6 +522,8 @@ def main(argv: list[str] | None = None) -> int:
     ed.add_argument("--plan", required=True)
     ed.add_argument("--out", default=None, help="default: overwrite --plan")
     ed.add_argument("--wait", action="store_true", help="block instead of detaching")
+    ed.add_argument("--hold-seconds", type=int, default=90,
+                    help="see `plan --hold-seconds`")
     ed.set_defaults(func=edit)
 
     s = sub.add_parser("start", help="launch build-deck detached and return at once")

@@ -50,15 +50,17 @@ directory as the working directory — `deck.py` handles that.
 ### 1. Create a plan
 
 ```bash
-python skills/palette/scripts/deck.py plan        --request "<the user's request>" --out plan.md
-python skills/palette/scripts/deck.py plan-status --out plan.md      # repeat until done
+python skills/palette/scripts/deck.py plan --request "<the user's request>" --out plan.md
+# usually returns the finished plan; only poll plan-status if it says running
 ```
 
 - Pass the user's request through **as-is** — do not reformat or restructure it.
-- **`plan` returns immediately.** The model call behind it takes 40-180
-  seconds, which is longer than a step lasts on some hosts, so it runs
-  detached and you collect it with `plan-status` — the same way the deck build
-  works. Keep polling until `"done": true`; the plan text comes back in `text`.
+- **`plan` usually answers in one call.** It holds the call open for up to 90
+  seconds and normally returns `"done": true` with the plan in `text`. There is
+  nothing to poll — use what it gave you.
+- **If it returns `"state": "running"`** the plan was slower than that, and it
+  is still being written. Collect it with `plan-status --out <plan>` until
+  `"done": true`. This is the exception, not the routine.
 - If the user pasted **material for the deck** (notes, content, data, an
   excerpt), ground the plan in it with `--context`:
 
@@ -76,16 +78,16 @@ python skills/palette/scripts/deck.py plan-status --out plan.md      # repeat un
 ### 2. Revise a plan
 
 ```bash
-python skills/palette/scripts/deck.py edit        --instruction "<the change>" --plan plan.md
-python skills/palette/scripts/deck.py plan-status --out plan.md      # repeat until done
+python skills/palette/scripts/deck.py edit --instruction "<the change>" --plan plan.md
+# same shape as plan: usually one call, poll plan-status only if it says running
 ```
 
 - Use for **any** change: slide count, tone, wording, content, adding or
   removing a slide, changing one specific slide.
 - Pass the requested change through as-is.
-- Overwrites `--plan` unless you pass `--out`. Collect it with `plan-status`
-  against whichever file it is writing — an edit is the same kind of model
-  call as a plan, and detaches for the same reason.
+- Overwrites `--plan` unless you pass `--out`. Behaves exactly like `plan`:
+  usually the revised plan comes straight back, and `plan-status` is only for
+  the slow case.
 
 ### 3. Build the deck
 
@@ -128,17 +130,26 @@ tail -20 ./deck/build.log
 `start` accepts `--palette-family <style>` for a specific visual style
 (default `ibm_watsonx`). Only pass it if the user asks.
 
-## Nothing here blocks — everything is start-then-poll
+## Nothing here can be cut short
 
-Both slow commands return at once and are collected by polling. That is not a
-style choice: a step that gets cut short mid-call tells you *nothing* about
-whether the work succeeded, while the work itself carries on and finishes with
-nobody collecting it. Every failure this skill has had in the wild was some
-version of that.
+Both slow commands run in their own process, so a host that caps a step can
+never kill the work mid-flight. What differs is how you collect them, because
+they are not the same shape of wait.
+
+**A plan is one model call.** `plan` holds the call open and normally hands you
+the finished plan — polling it would cost a round trip per poll, and those come
+out of the same budget the build needs later.
+
+**A build is minutes of rendering**, which no step limit will ever cover, so
+`start` returns at once and you poll `status` throughout.
+
+Either way, a step that gets cut short tells you *nothing* about whether the
+work succeeded, while the work carries on and finishes with nobody collecting
+it. Every failure this skill has had in the wild was some version of that.
 
 | You run | You collect with |
 |---|---|
-| `plan` / `edit` | `plan-status --out <plan>` |
+| `plan` / `edit` | usually nothing — poll `plan-status` only if it returned `running` |
 | `start` | `status --out-dir <dir>` |
 
 **A timeout, an error, or a killed step is never evidence of failure.** Poll
@@ -195,13 +206,33 @@ forgot the last one costs them ten minutes and produces two decks.
    **Never start a build until the user has confirmed this plan** — and never
    ask for that confirmation twice. If step 0 said a build is `running` or
    `done`, the gate is already behind you; report the build instead.
-3. **Branch on the reply:**
-   - **Confirms** ("yes", "looks good", "go ahead", "build it") → `start` the
-     build, poll `status`, then give the user the `.pptx` path.
-   - **Asks for changes** → run **edit** with their instruction, poll
-     `plan-status`, then **return to step 2** — present the revised plan and
-     ask again.
-4. Repeat until confirmed, then build.
+3. **Read the reply.** It is one of four things, and only the first builds:
+
+   | They said | Do this |
+   |---|---|
+   | **Approval** — "yes", "looks good", "go ahead", "build it", "ship it", "perfect" | `start` the build, poll `status`, report the `.pptx` path |
+   | **A change** — "make it 3 slides", "add a slide on cost", "more casual", "drop slide 2", "use our Q3 numbers" | `edit --instruction "<their words, verbatim>"`, then **back to step 2** |
+   | **A question** — "why is there no agenda slide?", "what's on slide 4?" | answer it from the plan, then ask for approval again. Do not build, do not edit |
+   | **A different deck** — "actually, do one on Kubernetes instead" | that is a new request: `plan` again from scratch |
+
+4. Repeat until they approve, then build.
+
+**The three that trip agents up:**
+
+- **"Yes, but make it shorter" is a change, not an approval.** Any approval
+  carrying a condition means edit first, then ask again. Building on it gives
+  them the deck they just told you was wrong, and costs ten minutes.
+- **Pass their words through verbatim.** `--instruction "make it 3 slides and
+  more casual"` — not your summary of it. `edit-plan` is a model call that
+  reads the user's phrasing; paraphrasing loses what they actually asked for.
+  Same rule as `plan`.
+- **Never build straight after an edit.** A revised plan is an unapproved plan.
+  Present it and ask again, however small the change was.
+
+**If they paste material after a plan exists** — notes, figures, an excerpt —
+they are almost always saying "use this in the deck". Feed it to `edit` as the
+instruction. Start a new `plan --context` only if they are clearly asking for a
+different deck.
 
 ## Reporting the result
 
