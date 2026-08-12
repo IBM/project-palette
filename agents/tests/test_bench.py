@@ -19,7 +19,12 @@ REPO_ROOT = AGENTS_DIR.parent
 BENCHMARK_DIR = REPO_ROOT / "benchmark"
 sys.path.append(str(BENCHMARK_DIR))
 
-bench = pytest.importorskip("palette_react.bench")
+#: The runner lives beside the benchmark's other two hosts; the agent it drives
+#: lives in agents/. These tests cover the runner.
+RUNNER = BENCHMARK_DIR / "react_run.py"
+SOURCE = RUNNER.read_text(encoding="utf-8")
+
+bench = pytest.importorskip("react_run")
 
 
 class TestOneJudgeForEveryHost:
@@ -33,14 +38,14 @@ class TestOneJudgeForEveryHost:
     def test_it_defines_no_scoring_of_its_own(self) -> None:
         """A local `judge` would shadow the import and the drift would be
         invisible — both hosts would still print a number."""
-        tree = ast.parse((AGENTS_DIR / "palette_react" / "bench.py").read_text())
+        tree = ast.parse(SOURCE)
         defined = {
             node.name
             for node in ast.walk(tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
         for name in ("judge", "inspect_deck", "newest_deck"):
-            assert name not in defined, f"bench.py defines its own {name}()"
+            assert name not in defined, f"react_run.py defines its own {name}()"
 
     def test_it_runs_the_same_cases(self) -> None:
         import cases
@@ -55,16 +60,16 @@ class TestOneJudgeForEveryHost:
 class TestItKeepsItsOwnColumn:
     def test_the_host_has_its_own_directory(self) -> None:
         assert bench.HOST == "react"
-        source = (AGENTS_DIR / "palette_react" / "bench.py").read_text()
+        source = SOURCE
         assert 'out_root / HOST' in source
 
     def test_it_does_not_write_into_the_other_hosts(self) -> None:
-        source = (AGENTS_DIR / "palette_react" / "bench.py").read_text()
+        source = SOURCE
         assert '"cuga"' not in source
         assert '"claude"' not in source
 
     def test_inputs_are_saved_next_to_outputs(self) -> None:
-        source = (AGENTS_DIR / "palette_react" / "bench.py").read_text()
+        source = SOURCE
         assert '"input"' in source and '"output"' in source
         for name in ("request.txt", "replies.txt", "context.md"):
             assert name in source, f"{name} is never written"
@@ -74,16 +79,16 @@ class TestTheReportSaysWhatRan:
     def test_the_model_is_recorded_not_hardcoded(self) -> None:
         """This host exists because the model is a variable. A report that does
         not name the model it ran cannot be compared with anything."""
-        source = (AGENTS_DIR / "palette_react" / "bench.py").read_text()
+        source = SOURCE
         assert '"model": options.model' in source
 
     def test_the_step_budget_is_reported(self) -> None:
         """Otherwise a failure is indistinguishable from exhausting it."""
-        source = (AGENTS_DIR / "palette_react" / "bench.py").read_text()
+        source = SOURCE
         assert '"recursion_limit"' in source
 
     def test_the_skill_loading_mode_is_reported(self) -> None:
-        source = (AGENTS_DIR / "palette_react" / "bench.py").read_text()
+        source = SOURCE
         assert '"skill_loading"' in source
 
 
@@ -92,14 +97,14 @@ class TestTheTrace:
         """Tracing is off unless `$PALETTE_TRACE` is set, so the runner sets it
         per case — without which the trace is silently empty and every
         edit-case verdict is unprovable."""
-        source = (AGENTS_DIR / "palette_react" / "bench.py").read_text()
+        source = SOURCE
         assert 'os.environ["PALETTE_TRACE"]' in source
         assert "palette-calls.jsonl" in source
 
     def test_it_clears_the_variable_afterwards(self) -> None:
         """Cases run in one process; a leaked path appends the next case's calls
         to the previous case's trace."""
-        source = (AGENTS_DIR / "palette_react" / "bench.py").read_text()
+        source = SOURCE
         assert 'os.environ.pop("PALETTE_TRACE"' in source
 
 

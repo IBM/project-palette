@@ -161,6 +161,23 @@ bench-collect: ## Harvest and judge the Claude Code decks
 	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
 	$(CUGA)/.venv/bin/python benchmark/claude_run.py collect
 
+bench-react: ## Run the LangGraph ReAct host (make bench-react CUGA=<path> [CASES=core] [EAGER=1])
+	@# The third host: watsonx openai/gpt-oss-120b, headless, fully automated.
+	@# It needs CUGA only for two things -- an interpreter that has langgraph
+	@# and langchain-ibm, and the .env holding the WATSONX_* credentials. It
+	@# does not drive CUGA and does not need the skill installed anywhere: it
+	@# reads skills/palette straight out of this checkout.
+	PALETTE_HOME=$(PWD) \
+	$(CUGA)/.venv/bin/python benchmark/react_run.py --env-file $(CUGA)/.env \
+		$(if $(CASES),--cases $(CASES),) $(if $(EAGER),--eager,)
+
+bench-react-check: ## Verify the ReAct host without running anything
+	PALETTE_HOME=$(PWD) \
+	$(CUGA)/.venv/bin/python benchmark/react_run.py --check --env-file $(CUGA)/.env
+
+bench-react-test: ## The ReAct host's own tests (offline, no model, no deck)
+	PALETTE_HOME=$(PWD) $(CUGA)/.venv/bin/python -m pytest agents/tests -q
+
 bench-check: ## Verify the benchmark setup without running anything
 	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
 	$(CUGA)/.venv/bin/python benchmark/run.py --check

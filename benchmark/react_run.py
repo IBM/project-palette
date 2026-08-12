@@ -1,13 +1,21 @@
-"""Run the benchmark's cases against the ReAct host, scored by the same judge.
+"""The third host: a LangGraph ReAct agent, on watsonx `openai/gpt-oss-120b`.
 
-    python agents/palette_react/bench.py --check --env-file <cuga>/.env
-    python agents/palette_react/bench.py --cases core
-    python agents/palette_react/bench.py --case edit_slide_count --trace-only
+    python benchmark/react_run.py --check --env-file <cuga>/.env
+    python benchmark/react_run.py --cases core
+    python benchmark/react_run.py --case edit_slide_count
 
-It imports `judge` from `benchmark/run.py` rather than reimplementing it, for
-the reason the benchmark's own tests give: two hosts scored by two rules is not
-a comparison. Nothing in `benchmark/` is modified — this reads it, exactly as
-`claude_run.py` already does.
+Third because the first two cannot be told apart. CUGA runs gpt-oss-120b and
+Claude Code runs Claude, so every difference between their columns has two
+possible causes and no way to separate them. This host makes the model a flag:
+run it on the same 120B CUGA uses and the scaffold is the only variable.
+
+It is also the thinnest scaffold in the set — a model, a shell, and a loader
+that hands over SKILL.md when asked. No planner, no todo list, no subagents. A
+case it passes was passed by the instructions, not by the harness around them.
+
+The agent itself lives in `agents/palette_react/`; this file is the runner, and
+it imports `judge` from `run.py` rather than reimplementing it. Two hosts scored
+by two rules is not a comparison, and neither is three.
 
 Results land in `benchmark/runs/<timestamp>/react/<case>/`, beside `cuga/` and
 `claude/`, in the same input/output shape.
@@ -25,17 +33,14 @@ import time
 import uuid
 from pathlib import Path
 
-AGENTS_DIR = Path(__file__).resolve().parent.parent
-REPO_ROOT = AGENTS_DIR.parent
-BENCHMARK_DIR = REPO_ROOT / "benchmark"
+BENCHMARK_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BENCHMARK_DIR.parent
+AGENTS_DIR = REPO_ROOT / "agents"
 
-if __package__ in (None, ""):
-    sys.path.insert(0, str(AGENTS_DIR))
-    __package__ = "palette_react"
-
-# Append rather than insert, for the reason run.py documents: this directory
-# going first shadows any stdlib module that shares a filename with a file in it.
+# Append rather than insert, for the reason run.py documents: these directories
+# going first shadow any stdlib module that shares a filename with a file in one.
 sys.path.append(str(BENCHMARK_DIR))
+sys.path.append(str(AGENTS_DIR))
 
 from cases import CASES, by_tag  # noqa: E402
 from run import CaseResult, inspect_deck, judge, newest_deck  # noqa: E402

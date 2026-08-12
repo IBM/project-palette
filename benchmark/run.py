@@ -172,6 +172,53 @@ def configure_cuga(cuga_home: Path) -> None:
     settings.policy.enabled = False
 
 
+# ---------------------------------------------------------------- the sandbox
+
+
+#: macOS Seatbelt policy, written by CUGA's native sandbox executor.
+SANDBOX_POLICY = Path("/tmp/.cuga_sandbox.sb")
+
+
+def reset_sandbox_policy() -> None:
+    """Write a Seatbelt policy that permits writes to *this* case's workspace.
+
+    `sandbox_mode = "native"` confines writes to `/private/tmp` and to
+    `<cwd>/cuga_workspace`, where cwd is read once — the first time a policy is
+    needed — and then cached. This harness runs every case in one process and
+    chdirs between them, so the policy stays pinned to case 1 and cases 2..n
+    cannot write to their own workspace.
+
+    What that costs, measured: the agent hits "Operation not permitted", falls
+    back to /private/tmp because that subpath is always writable, and builds a
+    perfectly good deck where the judge does not look. The trace is denied for
+    the same reason, so the case is scored "no .pptx was produced · palette
+    calls: (none)" while the model reports success. Four of five core cases
+    scored that way, and the run said 1/5 when the real figure was unknown.
+
+    **Written, not deleted.** Deleting it and letting CUGA rebuild was the
+    obvious fix and it is wrong: `_ensure_policy` sets `self._policy_written`,
+    an *instance* attribute that shadows the class one, so a live executor never
+    notices the class-level reset. Deleting the file then leaves
+    `sandbox-exec -f <profile>` pointing at nothing and every command fails
+    instantly — which is worse than the stale policy it replaced, and is exactly
+    what happened when it was tried.
+
+    Generating it here sidesteps the caching entirely: whatever the executor
+    believes, what is on disk is correct for the current directory.
+
+    Best-effort — a CUGA on another sandbox mode has no policy to write, and
+    that is not an error.
+    """
+    try:
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.native.native_sandbox_executor import (
+            _build_policy,
+        )
+    except Exception:  # noqa: BLE001 - a different sandbox mode, or a refactor
+        return
+    # Reads os.getcwd() at call time, so this must run *after* the chdir.
+    SANDBOX_POLICY.write_text(_build_policy(), encoding="utf-8")
+
+
 # -------------------------------------------------------------------- results
 
 
@@ -310,6 +357,7 @@ async def run_case(case: Case, cuga_home: Path, out_root: Path, timeout: int) ->
     # each case from its own, and the deck lands beside its trace.
     previous_cwd = Path.cwd()
     os.chdir(workspace)
+    reset_sandbox_policy()
 
     started = time.time()
     try:

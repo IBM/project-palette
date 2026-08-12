@@ -11,22 +11,27 @@ agents/
 │   ├── model.py     watsonx openai/gpt-oss-120b
 │   ├── tools.py     load_skill + a shell pinned to the workspace
 │   ├── agent.py     create_react_agent, lazy skill loading
-│   ├── cli.py       drive it by hand ← start here
-│   └── bench.py     run the benchmark's cases, scored by the shared judge
-├── tests/           67 offline tests
+│   └── cli.py       drive it by hand ← start here
+├── tests/           73 offline tests
 └── requirements.txt
+
+benchmark/react_run.py   the benchmark runner, beside run.py and claude_run.py
 ```
 
-## Nothing outside this folder changed
+The split is deliberate: the **scaffold** is a thing this repo builds and lives
+here; the **runner** belongs to the benchmark, next to the other two hosts, and
+is documented in [`benchmark/BENCHMARK.md`](../benchmark/BENCHMARK.md).
 
-Not `skills/`, not `benchmark/`, not the `Makefile`, not `pyproject.toml`. The
-skill is read where it already sits and the benchmark is imported, not edited —
-`bench.py` pulls `judge()` out of `benchmark/run.py` exactly as `claude_run.py`
-already does.
+## The skill is never modified
 
-`tests/test_isolation.py` enforces this: it fails if `skills/` is dirty, if any
-module here imports Palette's internals instead of going through `deck.py`, or
-if a run leaves a single byte of `skills/` or `benchmark/` different.
+Not by the loader, not by the prompt, not at install time — because there is no
+install. `skills/palette` is read where it sits, and `load_skill()` returns
+`SKILL.md`'s body byte-for-byte.
+
+`tests/test_isolation.py` enforces it: it fails if `skills/` is dirty, if the
+skill so much as mentions this host, if any module here imports Palette's
+internals instead of going through `deck.py`, or if a run leaves a single byte
+of `skills/` or `benchmark/` different.
 
 ## Why this host exists
 
@@ -69,16 +74,51 @@ carries IBM Plex — the check that separates *a deck exists* from *Palette made
 this*, since the renderer forces the font and a hand-written deck cannot have
 it. With `--trace` you also get every `deck.py` call and its arguments.
 
+Each command is printed as it runs, with a timestamp:
+
+```
+you ▸ yes
+
+  14:22:05 → bash: python .../deck.py start --plan plan.md --out-dir ./deck
+  14:22:05 ← {"state": "running", "pid": 9742, …}
+  14:23:05 → bash: python .../deck.py status --out-dir ./deck
+  14:23:47 ← {"state": "done", "pptx_bytes": 133860, …}
+
+agent ▸ Your deck has been built.
+```
+
+That output exists because of a real report: a build spends minutes inside
+`status` holds, and the first version printed nothing between `yes` and the
+finished deck. The deck was fine; the run looked hung, and a hung run reads as
+a crashed one. Four tests in `test_agent.py` cover it, including that the events
+arrive *during* the turn rather than all at the end.
+
 ## Run the benchmark
 
 ```bash
-$PY agents/palette_react/bench.py --check --env-file $ENV
-$PY agents/palette_react/bench.py --env-file $ENV --cases core     # 5 cases
-$PY agents/palette_react/bench.py --env-file $ENV --cases corpus   # your 13 documents
+make bench-react-check CUGA=<cuga-checkout>
+make bench-react       CUGA=<cuga-checkout> CASES=core     # 5 cases
+make bench-react       CUGA=<cuga-checkout> CASES=corpus   # the 13 documents
+make bench-react       CUGA=<cuga-checkout> EAGER=1        # inline the skill
+make bench-react-test                                      # these tests
+```
+
+Or directly, which is what those targets run:
+
+```bash
+$PY benchmark/react_run.py --check --env-file $ENV
+$PY benchmark/react_run.py --env-file $ENV --cases core
 ```
 
 Results land in `benchmark/runs/<timestamp>/react/`, in the same shape as
 `cuga/` and `claude/`: `input/` beside `output/`, plus `palette-calls.jsonl`.
+Read them back with the same tool the other hosts use:
+
+```bash
+$PY benchmark/show.py                  # the newest run, whichever host
+$PY benchmark/show.py --failures
+$PY benchmark/show.py --run benchmark/runs/<timestamp>/react --verbose
+```
 
 ## The one design decision worth knowing
 
@@ -116,7 +156,8 @@ is the skill's.
 ## Tests
 
 ```bash
-PALETTE_HOME=$PWD $PY -m pytest agents/tests -q      # 67, all offline
+PALETTE_HOME=$PWD $PY -m pytest agents/tests -q      # 73, all offline
+make bench-react-test                                # the same thing
 ```
 
 Nothing reaches watsonx and nothing renders a deck — those cost minutes and

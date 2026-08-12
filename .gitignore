@@ -50,4 +50,5 @@ skills/**/*.pyc
 # Benchmark run output: decks, traces and reports. Reproducible, large,
 # and per-machine — the harness and its cases are the source of truth.
 benchmark/runs/
+benchmark/inputs/
 cuga_workspace/

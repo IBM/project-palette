@@ -91,6 +91,59 @@ class TestWhatTheAgentWillActuallyRun:
             )
 
 
+class TestStagingMakesTheInstructionsTrue:
+    """SKILL.md says `python skills/palette/scripts/deck.py`.
+
+    That path is relative to a skills root. Hosts that install a skill have one;
+    this host did not, so the very first command of every run failed and the
+    agent spent a round trip discovering it — out of a budget the judge
+    measures. Staging a copy into the workspace makes the path correct instead
+    of asking the model to translate it.
+    """
+
+    def test_the_skill_lands_where_the_instructions_say(
+        self, card, workspace: Path
+    ) -> None:
+        staged = skill_loader.stage(card, workspace)
+        assert staged.directory == workspace / "skills" / "palette"
+        # The literal command out of SKILL.md, resolved from the working dir.
+        assert (workspace / "skills" / "palette" / "scripts" / "deck.py").is_file()
+
+    def test_the_copy_is_byte_identical(self, card, workspace: Path) -> None:
+        staged = skill_loader.stage(card, workspace)
+        assert tree_digest(staged.directory) == tree_digest(card.directory)
+
+    def test_the_card_is_otherwise_unchanged(self, card, workspace: Path) -> None:
+        staged = skill_loader.stage(card, workspace)
+        assert staged.name == card.name
+        assert staged.description == card.description
+        assert staged.body == card.body
+
+    def test_staging_does_not_touch_the_source(
+        self, card, skills_root: Path, workspace: Path
+    ) -> None:
+        before = tree_digest(skills_root)
+        skill_loader.stage(card, workspace)
+        assert tree_digest(skills_root) == before
+
+    def test_it_is_rebuilt_rather_than_merged(self, card, workspace: Path) -> None:
+        """A copy that accumulates cannot drift the way an installed one can —
+        but only if the previous copy is removed rather than written over."""
+        staged = skill_loader.stage(card, workspace)
+        stale = staged.directory / "left-behind.md"
+        stale.write_text("from an older run", encoding="utf-8")
+
+        skill_loader.stage(card, workspace)
+        assert not stale.exists(), "a file from a previous run survived"
+
+    def test_no_pycache_is_carried_across(self, card, workspace: Path) -> None:
+        """deck.py is executed from the staged copy; a stale .pyc there would be
+        the one thing that could make it behave unlike the checkout."""
+        staged = skill_loader.stage(card, workspace)
+        assert not list(staged.directory.rglob("__pycache__"))
+        assert not list(staged.directory.rglob("*.pyc"))
+
+
 class TestFailuresAreActionable:
     def test_a_missing_palette_home_names_the_variable(self, monkeypatch) -> None:
         monkeypatch.delenv("PALETTE_HOME", raising=False)

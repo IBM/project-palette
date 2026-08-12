@@ -20,7 +20,19 @@ RUNS = Path(__file__).resolve().parent / "runs"
 
 
 def newest_run() -> Path:
-    runs = [p for p in RUNS.glob("*") if (p / "report.json").is_file()]
+    """The most recent directory holding a report.
+
+    Two shapes, because the hosts write at different depths: the CUGA runner
+    puts `report.json` at the top of a run, while the per-host runners put it
+    under `<run>/<host>/`. Globbing only the first shape made a completed react
+    run look like no run at all.
+    """
+    runs = [
+        p
+        for pattern in ("*", "*/*")
+        for p in RUNS.glob(pattern)
+        if (p / "report.json").is_file()
+    ]
     if not runs:
         raise SystemExit(f"error: no completed run under {RUNS}")
     return max(runs, key=lambda p: p.stat().st_mtime)
@@ -49,8 +61,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.failures:
         results = [r for r in results if not r["ok"]]
 
+    # Not every host records a model: the Claude runner has never known which
+    # one answered, because a person typed the utterances. Say what is known
+    # rather than raising over what is not.
+    label = " · ".join(
+        part for part in (report.get("host"), report.get("model")) if part
+    ) or "unknown host"
     print(f"run: {run}")
-    print(f"model: {report['model']} · {report['passed']}/{report['cases']} passed\n")
+    print(f"{label} · {report['passed']}/{report['cases']} passed\n")
 
     for r in results:
         mark = "PASS" if r["ok"] else "FAIL"

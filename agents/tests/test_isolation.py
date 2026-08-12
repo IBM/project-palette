@@ -25,18 +25,23 @@ REPO_ROOT = AGENTS_DIR.parent
 SOURCES = sorted((AGENTS_DIR / "palette_react").glob("*.py"))
 
 
-class TestNothingOutsideAgentsWasChanged:
-    def test_the_repo_does_not_mention_this_package(self) -> None:
-        """The Makefile, pyproject and README were left alone on purpose. If a
-        target or a dependency group appears, this host stopped being additive
-        and the constraint should be re-agreed rather than quietly dropped."""
+class TestTheSkillIsLeftAlone:
+    """The rule that did not change.
+
+    The benchmark and the Makefile now know about this host — that was asked
+    for, and `benchmark/react_run.py` is the runner. `skills/` is the one place
+    still off limits, because it is the thing being measured: a skill adjusted
+    to suit a host is a skill that no longer tells you anything about the host.
+    """
+
+    def test_the_skill_does_not_mention_this_host(self) -> None:
         done = subprocess.run(
-            ["git", "grep", "-l", "palette_react", "--",
-             ":!agents/", ":!benchmark/runs/"],
+            ["git", "grep", "-lE", "palette_react|react_run|langgraph", "--", "skills/"],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
         assert not done.stdout.strip(), (
-            "files outside agents/ now reference this host:\n" + done.stdout
+            "the skill now references this host, which means it was adapted to "
+            "one of the agents it is meant to measure:\n" + done.stdout
         )
 
     def test_the_skill_has_no_uncommitted_changes(self) -> None:
@@ -54,6 +59,12 @@ class TestNothingOutsideAgentsWasChanged:
         assert not done.stdout.strip(), (
             "the skill has uncommitted changes:\n" + done.stdout
         )
+
+    def test_the_runner_is_registered_with_the_benchmark(self) -> None:
+        """The other half of the same rule: integration belongs in the
+        benchmark, not in the skill."""
+        assert (REPO_ROOT / "benchmark" / "react_run.py").is_file()
+        assert "bench-react" in (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
 
 
 class TestItGoesThroughTheSkillLikeAnyHost:

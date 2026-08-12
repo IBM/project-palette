@@ -123,6 +123,41 @@ ls -l cuga_workspace/*/deck/deck.pptx
 cat  cuga_workspace/*/deck/.palette-build.json    # "state": "done"
 ```
 
+### Stage 6 — the LangGraph ReAct agent (~3 min, fully automated)
+
+The only host you do not have to talk to. Nothing to install: it reads
+`skills/palette` out of the checkout.
+
+```bash
+cd $P
+export PALETTE_HOME=$PWD
+
+$C/.venv/bin/python -m pytest agents/tests -q                  # offline, ~3s
+$C/.venv/bin/python benchmark/react_run.py --check --env-file $C/.env
+
+$C/.venv/bin/python agents/palette_react/cli.py --env-file $C/.env --trace \
+    --workspace /tmp/palette-smoke \
+    "Build a 3-slide deck explaining prompt caching to backend engineers" \
+    --reply yes
+```
+
+It prints each command as it runs, then the deck's size, slide count, and
+whether it carries IBM Plex — so you do not need Stage 2's checks afterwards.
+A good run ends like this:
+
+```
+133,860 bytes · 3 slides · rendered by Palette
+palette calls:
+  find      0.0s  {"root": "."}
+  plan     48.1s  {"request": "Build a 3-slide deck…", "out": "plan.md"}
+  start     0.0s  {"plan": "plan.md", "out_dir": "./deck"}
+  status   60.1s
+  status   42.1s
+```
+
+`start` appearing only after the `yes` is the part worth looking at: it means
+the approval gate held. Uses watsonx (`WATSONX_*` in `$C/.env`), not RITS.
+
 ## 1b. Where did my deck go?
 
 The first thing to run when a session seems stuck, looping, or silent. It reads

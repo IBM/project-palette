@@ -166,17 +166,25 @@ def main(argv: list[str] | None = None) -> int:
     message = args.request
     started = time.time()
 
+    def progress(line: str) -> None:
+        # A build spends minutes inside `status` holds. Without this the turn
+        # after "yes" prints nothing at all until the deck is finished, which
+        # reads as a hang.
+        stamp = time.strftime("%H:%M:%S")
+        for part in line.splitlines():
+            print(f"  {stamp} {part}", flush=True)
+
     while True:
         print(f"you ▸ {message}\n")
         try:
-            answer = session.send(message)
+            answer = session.send(message, on_event=progress)
         except KeyboardInterrupt:
             print("\n[interrupted]")
             break
         except Exception as exc:  # noqa: BLE001 - report, never a bare traceback
             print(f"\n[the turn failed: {type(exc).__name__}: {exc}]")
             break
-        print(f"agent ▸ {answer}\n")
+        print(f"\nagent ▸ {answer}\n")
 
         if pending:
             message = pending.pop(0)

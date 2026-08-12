@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+import shutil
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 #: Frontmatter is the leading `---` block. Parsed with a regex rather than a
@@ -128,3 +129,37 @@ def load(name: str = "palette", root: str | os.PathLike[str] | None = None) -> S
         body=body,
         directory=folder,
     )
+
+
+def stage(card: SkillCard, workspace: str | os.PathLike[str]) -> SkillCard:
+    """Copy the skill into `<workspace>/skills/<name>` and return a card for it.
+
+    SKILL.md refers to its own script as `skills/<name>/scripts/deck.py` — a
+    path relative to a skills root. Every host that installs a skill has one;
+    this host had the skill sitting outside the working directory, so the
+    instructions were literally wrong and the agent spent its first command
+    finding that out:
+
+        → python skills/palette/scripts/deck.py find --root .
+        ← python: can't open file '.../skills/palette/scripts/deck.py'
+        → python /abs/path/to/skills/palette/scripts/deck.py find --root .
+
+    One wasted round trip per run, out of a budget the judge measures. Staging
+    a copy makes the instructions true instead of asking the model to
+    compensate for them.
+
+    A copy rather than a symlink, and rebuilt per run, for two reasons the other
+    hosts get for free: an agent cannot damage the checkout through it, and it
+    cannot drift, because nothing survives to go stale.
+    """
+    root = Path(workspace).expanduser().resolve() / "skills"
+    destination = root / card.name
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        card.directory,
+        destination,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    return replace(card, directory=destination)

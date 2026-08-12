@@ -302,6 +302,26 @@ Either way you get a **plan first, and a question** — approving it is a second
 turn — then a rendered `.pptx`. If something looks wrong, the reset and
 verification recipes are in [`CHEATSHEET.md`](CHEATSHEET.md).
 
+**A host with nothing to install**
+
+This repo also builds one: a LangGraph ReAct agent that reads `skills/palette`
+straight out of the checkout, so there is no installed copy and nothing to keep
+in sync. It runs headless and takes the request on the command line, which
+makes it the quickest way to see the skill drive a real deck end to end:
+
+```bash
+export PALETTE_HOME=$PWD
+PY=<cuga-checkout>/.venv/bin/python     # any interpreter with langgraph + langchain-ibm
+
+$PY agents/palette_react/cli.py --env-file <cuga-checkout>/.env --trace \
+    "Build a 3-slide deck explaining prompt caching to backend engineers" --reply yes
+```
+
+It uses **watsonx** (`WATSONX_*`) rather than RITS, prints every command as it
+runs, and finishes by telling you whether the `.pptx` carries IBM Plex. Details
+in [`agents/README.md`](agents/README.md); as a benchmark host it is
+`benchmark/react_run.py`.
+
 ### Other install routes
 
 ```bash
@@ -450,7 +470,8 @@ tests/             Contract tests binding the skill to palette.py's CLI
 | **this file** | you want to run Palette — install, the web UI, config, containers, deployment |
 | [`CHEATSHEET.md`](CHEATSHEET.md) | something is broken and you want to reset it, or you want the test loop in six lines |
 | [`docs/skill-guide.html`](docs/skill-guide.html) | you are showing this to someone — a single page covering try it, test it, and what broke. `open docs/skill-guide.html`, or serve `docs/` anywhere |
-| [`benchmark/BENCHMARK.md`](benchmark/BENCHMARK.md) | you want to measure the skill: 33 scripted conversations over 13 real documents, on CUGA and Claude Code, with every Palette call traced |
+| [`benchmark/BENCHMARK.md`](benchmark/BENCHMARK.md) | you want to measure the skill: 33 scripted conversations over 13 real documents, on three hosts, with every Palette call traced |
+| [`agents/README.md`](agents/README.md) | you want a host this repo builds rather than one you install into — a LangGraph ReAct agent on watsonx, drivable from the command line and useful for isolating the model from the scaffold |
 | [`docs/skill-flow-in-cuga.md`](docs/skill-flow-in-cuga.md) | you want to know what actually happens between "build me a deck" and a `.pptx` — discovery, routing, sandbox, completion. Sequence diagram plus the code path |
 | [`SKILL.md`](SKILL.md) | you want the agent-facing instructions on their own |
 | [`skills/palette/SKILL.md`](skills/palette/SKILL.md) | you are looking at what actually ships to a host, including the long-build path |

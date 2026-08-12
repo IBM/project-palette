@@ -85,9 +85,9 @@ class TestTheStepBudgetIsExplicit:
         seen = {}
 
         class Graph:
-            def invoke(self, state, config):  # noqa: ANN001, ARG002
+            def stream(self, state, config, stream_mode):  # noqa: ANN001, ARG002
                 seen.update(config)
-                return {"messages": [AIMessage(content="ok")]}
+                yield {"agent": {"messages": [AIMessage(content="ok")]}}
 
         session = Session(graph=Graph(), thread_id="t-1", recursion_limit=77)
         assert session.send("hello") == "ok"
@@ -96,8 +96,8 @@ class TestTheStepBudgetIsExplicit:
 
     def test_turns_are_recorded_for_the_transcript(self) -> None:
         class Graph:
-            def invoke(self, state, config):  # noqa: ANN001, ARG002
-                return {"messages": [AIMessage(content="answered")]}
+            def stream(self, state, config, stream_mode):  # noqa: ANN001, ARG002
+                yield {"agent": {"messages": [AIMessage(content="answered")]}}
 
         session = Session(graph=Graph(), thread_id="t")
         session.send("first")
@@ -109,10 +109,104 @@ class TestTheStepBudgetIsExplicit:
         """Some providers return content as a list of blocks rather than a
         string; a host that stores the list writes an unreadable transcript."""
         class Graph:
-            def invoke(self, state, config):  # noqa: ANN001, ARG002
-                return {"messages": [AIMessage(content=[{"type": "text", "text": "hi"}])]}
+            def stream(self, state, config, stream_mode):  # noqa: ANN001, ARG002
+                yield {"agent": {"messages": [
+                    AIMessage(content=[{"type": "text", "text": "hi"}])
+                ]}}
 
         assert Session(graph=Graph(), thread_id="t").send("x") == "hi"
+
+
+class TestALongTurnShowsProgress:
+    """A turn that builds a deck spends minutes inside `status` holds.
+
+    Reported from a real run: after "yes" the CLI printed nothing until the
+    deck was finished, roughly two minutes later. The deck was fine; the run
+    looked hung, and the obvious reading of a hung run is a crashed one.
+    """
+
+    def test_tool_calls_are_emitted_as_they_happen(
+        self, workspace: Path, card, scripted
+    ) -> None:
+        seen: list[str] = []
+        model = scripted(
+            replies=[
+                AIMessage(content="", tool_calls=[
+                    {"name": "bash",
+                     "args": {"command": "deck.py status --out-dir ./deck"}, "id": "1"}
+                ]),
+                AIMessage(content="built"),
+            ],
+            seen=[], bound=[],
+        )
+        session = build_agent(workspace, [card], model, thread_id="t-progress")
+        assert session.send("build it", on_event=seen.append) == "built"
+
+        joined = "\n".join(seen)
+        assert "bash" in joined
+        assert "deck.py status" in joined, "the command being run is not shown"
+        assert any(line.startswith("←") for line in joined.splitlines()), (
+            "the result of the command is never shown"
+        )
+
+    def test_events_arrive_before_the_turn_returns(
+        self, workspace: Path, card, scripted
+    ) -> None:
+        """Emitting them all at the end would leave the hang exactly as it was."""
+        order: list[str] = []
+        model = scripted(
+            replies=[
+                AIMessage(content="", tool_calls=[
+                    {"name": "bash", "args": {"command": "echo one"}, "id": "1"}
+                ]),
+                AIMessage(content="done"),
+            ],
+            seen=[], bound=[],
+        )
+        session = build_agent(workspace, [card], model, thread_id="t-order")
+        session.send("go", on_event=lambda line: order.append(f"event:{line[:6]}"))
+        order.append("returned")
+
+        assert order[-1] == "returned"
+        assert len(order) > 1, "no events were emitted at all"
+
+    def test_steps_are_kept_on_the_turn(self, workspace: Path, card, scripted) -> None:
+        """The transcript should show what the agent did, not only what it said."""
+        model = scripted(
+            replies=[
+                AIMessage(content="", tool_calls=[
+                    {"name": "load_skill", "args": {"name": "palette"}, "id": "1"}
+                ]),
+                AIMessage(content="ready"),
+            ],
+            seen=[], bound=[],
+        )
+        session = build_agent(workspace, [card], model, thread_id="t-steps")
+        session.send("hello")
+        assert session.turns[-1]["steps"], "the turn recorded no steps"
+
+    def test_a_tool_call_does_not_overwrite_the_answer(
+        self, workspace: Path, card, scripted
+    ) -> None:
+        """Tool-call messages carry empty content. Taking the last AI message
+        blindly would return "" for every turn that ended in a tool call."""
+        model = scripted(
+            replies=[
+                AIMessage(content="", tool_calls=[
+                    {"name": "bash", "args": {"command": "true"}, "id": "1"}
+                ]),
+                AIMessage(content="the real answer"),
+            ],
+            seen=[], bound=[],
+        )
+        session = build_agent(workspace, [card], model, thread_id="t-answer")
+        assert session.send("go") == "the real answer"
+
+    def test_on_event_is_optional(self, workspace: Path, card, scripted) -> None:
+        """bench.py does not pass one; a missing callback must not crash a run."""
+        model = scripted(replies=[AIMessage(content="fine")], seen=[], bound=[])
+        session = build_agent(workspace, [card], model, thread_id="t-none")
+        assert session.send("go") == "fine"
 
 
 class TestItAssemblesAndRuns:
@@ -168,6 +262,33 @@ class TestItAssemblesAndRuns:
         place = tmp_path / "nested" / "run"
         build_agent(place, [card], scripted(replies=[], seen=[], bound=[]))
         assert place.is_dir()
+
+    def test_the_skill_is_staged_into_the_workspace_by_default(
+        self, workspace: Path, card, scripted
+    ) -> None:
+        """So that the literal command in SKILL.md resolves from the working
+        directory, instead of costing a failed round trip on every run."""
+        build_agent(workspace, [card], scripted(replies=[], seen=[], bound=[]))
+        assert (workspace / "skills" / "palette" / "scripts" / "deck.py").is_file()
+
+    def test_the_prompt_points_at_the_staged_copy(
+        self, workspace: Path, card, scripted
+    ) -> None:
+        """Not at the checkout — otherwise the two locations disagree and the
+        model has to pick."""
+        model = scripted(replies=["ok"], seen=[], bound=[])
+        session = build_agent(workspace, [card], model, thread_id="t-staged")
+        session.send("hello")
+
+        system = str(model.seen[0][0].content)
+        assert str(workspace / "skills") in system
+        assert str(card.directory.parent) not in system
+
+    def test_staging_can_be_turned_off(self, workspace: Path, card, scripted) -> None:
+        build_agent(
+            workspace, [card], scripted(replies=[], seen=[], bound=[]), stage_skills=False
+        )
+        assert not (workspace / "skills").exists()
 
     def test_building_an_agent_does_not_touch_the_skill(
         self, workspace: Path, card, skills_root: Path, scripted

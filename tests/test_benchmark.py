@@ -286,28 +286,163 @@ class TestTheCorpus:
             read("no-such-file.md")
 
 
-class TestBothHostsAreScoredTheSameWay:
-    """Two hosts, one corpus, one judge — otherwise the comparison is theatre."""
+class TestTheSandboxPolicyIsRebuiltPerCase:
+    """CUGA's native sandbox reads the working directory once and caches it.
 
-    def test_the_claude_runner_imports_the_shared_judge(self) -> None:
-        source = (REPO_ROOT / "benchmark" / "claude_run.py").read_text(encoding="utf-8")
+    Cases run in one process and chdir between them, so a cached policy stays
+    pinned to case 1 and every later case is denied writes to its own
+    workspace. The agent then falls back to /private/tmp, builds a real deck
+    where the judge does not look, and the case is scored "no .pptx produced ·
+    palette calls: (none)" while the model reports success. Measured once as
+    1/5 before this existed.
+    """
+
+    def test_the_policy_names_the_current_workspace(self, tmp_path, monkeypatch) -> None:
+        """The whole point: after a chdir, the policy must permit writes here."""
+        pytest.importorskip(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.executors.native.native_sandbox_executor",
+            reason="CUGA is not installed in this interpreter",
+        )
+        import run
+
+        policy = tmp_path / ".cuga_sandbox.sb"
+        policy.write_text('(subpath "/some/earlier/case/cuga_workspace")')
+        monkeypatch.setattr(run, "SANDBOX_POLICY", policy)
+        monkeypatch.chdir(tmp_path)
+
+        run.reset_sandbox_policy()
+        written = policy.read_text()
+        assert str(tmp_path.resolve() / "cuga_workspace") in written
+        assert "/some/earlier/case" not in written, "the stale policy survived"
+
+    def test_the_policy_is_written_not_deleted(self) -> None:
+        """Deleting it and letting CUGA rebuild looks right and is wrong.
+
+        `_ensure_policy` sets an *instance* attribute, so a live executor never
+        sees a class-level reset; the file then stays missing and every
+        `sandbox-exec -f <profile>` fails instantly. Tried, measured, worse than
+        the stale policy it replaced.
+        """
+        source = (REPO_ROOT / "benchmark" / "run.py").read_text(encoding="utf-8")
+        body = source[source.index("def reset_sandbox_policy"):]
+        body = body[: body.index("\n# ---")]
+        assert "SANDBOX_POLICY.write_text" in body
+        assert "unlink" not in body, "back to deleting the policy; see the docstring"
+
+    def test_it_survives_a_cuga_without_seatbelt(self, tmp_path, monkeypatch) -> None:
+        """Another sandbox mode has no policy to write; that is not an error."""
+        import run
+
+        monkeypatch.setattr(run, "SANDBOX_POLICY", tmp_path / "unused.sb")
+        monkeypatch.setitem(
+            __import__("sys").modules,
+            "cuga.backend.cuga_graph.nodes.cuga_lite.executors.native.native_sandbox_executor",
+            None,
+        )
+        run.reset_sandbox_policy()  # must not raise
+
+    def test_it_is_called_after_chdir(self) -> None:
+        """Order matters: `_build_policy` reads os.getcwd() at call time, so
+        running it before the chdir would authorise the previous case."""
+        source = (REPO_ROOT / "benchmark" / "run.py").read_text(encoding="utf-8")
+        chdir = source.index("os.chdir(workspace)")
+        reset = source.index("reset_sandbox_policy()", chdir)
+        assert chdir < reset
+
+
+#: One file per host. Adding a host means adding it here, which is how these
+#: tests stay true as the set grows.
+RUNNERS = ("run.py", "claude_run.py", "react_run.py")
+
+
+class TestEveryHostIsScoredTheSameWay:
+    """Three hosts, one corpus, one judge — otherwise the comparison is theatre."""
+
+    def test_every_runner_exists(self) -> None:
+        for name in RUNNERS:
+            assert (REPO_ROOT / "benchmark" / name).is_file(), f"no benchmark/{name}"
+
+    @pytest.mark.parametrize("name", RUNNERS[1:])
+    def test_the_other_runners_import_the_shared_judge(self, name: str) -> None:
+        """run.py owns `judge`; every other host has to import it rather than
+        write one, or its numbers cannot be compared with CUGA's."""
+        source = (REPO_ROOT / "benchmark" / name).read_text(encoding="utf-8")
         assert "from run import" in source and "judge" in source, (
-            "the Claude side scores with its own rules, so its numbers cannot be "
-            "compared with CUGA's"
+            f"{name} scores with its own rules"
         )
 
-    def test_each_host_gets_its_own_directory(self) -> None:
-        run = (REPO_ROOT / "benchmark" / "run.py").read_text(encoding="utf-8")
-        claude = (REPO_ROOT / "benchmark" / "claude_run.py").read_text(encoding="utf-8")
-        assert 'out_root / "cuga"' in run
-        assert 'out_root / "claude"' in claude
+    @pytest.mark.parametrize("name", RUNNERS[1:])
+    def test_no_runner_redefines_the_verdict(self, name: str) -> None:
+        """A local `def judge` shadows the import silently — the run still
+        prints a number, and the number means something else."""
+        source = (REPO_ROOT / "benchmark" / name).read_text(encoding="utf-8")
+        assert "\ndef judge(" not in source, f"{name} defines its own judge()"
 
-    def test_inputs_are_saved_next_to_outputs(self) -> None:
+    def test_each_host_gets_its_own_directory(self) -> None:
+        benchmark = REPO_ROOT / "benchmark"
+        assert 'out_root / "cuga"' in (benchmark / "run.py").read_text(encoding="utf-8")
+        assert 'out_root / "claude"' in (benchmark / "claude_run.py").read_text(encoding="utf-8")
+
+        react = (benchmark / "react_run.py").read_text(encoding="utf-8")
+        assert 'HOST = "react"' in react and "out_root / HOST" in react
+
+    @pytest.mark.parametrize("name", RUNNERS)
+    def test_inputs_are_saved_next_to_outputs(self, name: str) -> None:
         """A number without the question attached cannot be reproduced."""
-        for name in ("run.py", "claude_run.py"):
-            source = (REPO_ROOT / "benchmark" / name).read_text(encoding="utf-8")
-            assert '"input"' in source, f"{name} does not save the input it used"
-            assert '"output"' in source, f"{name} does not collect the deck it produced"
+        source = (REPO_ROOT / "benchmark" / name).read_text(encoding="utf-8")
+        assert '"input"' in source, f"{name} does not save the input it used"
+        assert '"output"' in source, f"{name} does not collect the deck it produced"
+
+    @pytest.mark.parametrize("name", RUNNERS)
+    def test_every_runner_can_be_imported_without_credentials(self, name: str) -> None:
+        """Importing must not need a key or a live provider — only the host's
+        own library, which is optional and not in Palette's venv.
+
+        Skipped rather than failed when that library is absent, because this
+        suite runs under Palette's interpreter and a host's dependency is not
+        Palette's problem. Any *other* ImportError is a real break and fails.
+        """
+        optional = {"langgraph", "langchain", "langchain_core", "langchain_ibm"}
+        try:
+            __import__(name.removesuffix(".py"))
+        except ModuleNotFoundError as exc:
+            if exc.name in optional:
+                pytest.skip(
+                    f"{name} needs {exc.name}, which this interpreter does not have "
+                    f"(see agents/requirements.txt)"
+                )
+            raise
+
+
+class TestTheReactHostKeepsTheModelHonest:
+    """The third host exists because the first two confound scaffold and model.
+
+    CUGA runs gpt-oss-120b, Claude Code runs Claude, so nothing that differs
+    between their columns can be attributed to either. That only holds if this
+    host reports which model actually answered.
+    """
+
+    def test_the_model_is_reported_rather_than_assumed(self) -> None:
+        source = (REPO_ROOT / "benchmark" / "react_run.py").read_text(encoding="utf-8")
+        assert '"model": options.model' in source
+
+    def test_the_step_budget_is_reported(self) -> None:
+        """A run that exhausted its recursion limit looks exactly like an agent
+        that gave up. The report has to distinguish them."""
+        source = (REPO_ROOT / "benchmark" / "react_run.py").read_text(encoding="utf-8")
+        assert '"recursion_limit"' in source
+
+    def test_the_skill_loading_mode_is_reported(self) -> None:
+        """Eager loading answers the routing question before the model sees the
+        request, which quietly retires the case tagged `routing`. Which mode ran
+        has to be on the record."""
+        source = (REPO_ROOT / "benchmark" / "react_run.py").read_text(encoding="utf-8")
+        assert '"skill_loading"' in source
+
+    def test_the_agent_it_drives_lives_outside_the_benchmark(self) -> None:
+        """The runner belongs to the benchmark; the agent does not. Keeping the
+        scaffold in agents/ is what lets it be swapped without touching this."""
+        assert (REPO_ROOT / "agents" / "palette_react" / "agent.py").is_file()
 
     def test_the_claude_runner_detects_rather_than_assumes_a_cli(self) -> None:
         """There is no `claude` binary on this machine; pretending otherwise

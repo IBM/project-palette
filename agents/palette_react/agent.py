@@ -26,7 +26,7 @@ from langgraph.checkpoint.memory import MemorySaver
 # When 2.0 lands, change these two lines deliberately and re-run the suite.
 from langgraph.prebuilt import create_react_agent
 
-from .skill import SkillCard
+from .skill import SkillCard, stage
 from .tools import build_tools
 
 #: LangGraph's default is 25, which is roughly twelve model turns — less than
@@ -189,10 +189,19 @@ def build_agent(
     timeout: int | None = None,
     recursion_limit: int = DEFAULT_RECURSION_LIMIT,
     thread_id: str = "standalone",
+    stage_skills: bool = True,
 ) -> Session:
-    """Wire model + tools + prompt into a session bound to `workspace`."""
+    """Wire model + tools + prompt into a session bound to `workspace`.
+
+    `stage_skills` copies each skill into `<workspace>/skills/` first, so the
+    relative paths its own instructions use resolve from the working directory
+    — see `skill.stage`. Off only for tests that want the checkout's own paths.
+    """
     workspace = Path(workspace).expanduser().resolve()
     workspace.mkdir(parents=True, exist_ok=True)
+
+    if stage_skills:
+        cards = [stage(card, workspace) for card in cards]
 
     kwargs = {} if timeout is None else {"timeout": timeout}
     tools = build_tools(workspace, cards, lazy=lazy, **kwargs)
