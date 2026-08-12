@@ -37,8 +37,6 @@ import shutil
 import sys
 import time
 import uuid
-import zipfile
-from dataclasses import dataclass, field
 from pathlib import Path
 
 BENCHMARK_DIR = Path(__file__).resolve().parent
@@ -48,9 +46,23 @@ REPO_ROOT = BENCHMARK_DIR.parent
 # dataclasses failed deep inside cases.py with a baffling AttributeError.
 sys.path.append(str(BENCHMARK_DIR))
 
-from cases import CASES, Case, by_tag  # noqa: E402
+# The corpus lives at $PALETTE_BENCH_INPUTS and cases.py reads it on import, so
+# a missing variable surfaces here. Re-raised as SystemExit: the message is
+# already actionable, and a traceback through the import machinery buries it.
+try:
+    from cases import CASES, Case, by_tag  # noqa: E402
+except Exception as exc:  # noqa: BLE001 - corpus.CorpusNotConfigured, or a bad path
+    raise SystemExit(f"error: {exc}") from None
+# The shared verdict. Every host imports it from here — see verdict.py.
+from verdict import (  # noqa: E402
+    MIN_PPTX_BYTES,
+    CaseResult,
+    TurnRecord,
+    inspect_deck,
+    judge,
+    newest_deck,
+)
 
-MIN_PPTX_BYTES = 20_000
 #: A build is 3-10 minutes and a plan up to 3; a conversation that has not
 #: finished well past that is stuck rather than slow.
 DEFAULT_CASE_TIMEOUT = 1500
@@ -219,111 +231,6 @@ def reset_sandbox_policy() -> None:
     SANDBOX_POLICY.write_text(_build_policy(), encoding="utf-8")
 
 
-# -------------------------------------------------------------------- results
-
-
-@dataclass
-class TurnRecord:
-    sent: str
-    answer: str
-    seconds: float
-    error: str | None = None
-
-
-@dataclass
-class CaseResult:
-    case: Case
-    turns: list[TurnRecord] = field(default_factory=list)
-    palette_calls: list[dict] = field(default_factory=list)
-    pptx: Path | None = None
-    slides: int = 0
-    has_plex: bool = False
-    seconds: float = 0.0
-    failures: list[str] = field(default_factory=list)
-    workspace: Path | None = None
-
-    @property
-    def ok(self) -> bool:
-        return not self.failures
-
-    def commands(self) -> list[str]:
-        return [c.get("command", "?") for c in self.palette_calls]
-
-
-# ------------------------------------------------------------------ verifying
-
-
-def inspect_deck(pptx: Path) -> tuple[int, bool]:
-    """(slide count, carries IBM Plex). Plex is what proves Palette rendered it."""
-    try:
-        with zipfile.ZipFile(pptx) as archive:
-            slides = [n for n in archive.namelist() if n.startswith("ppt/slides/slide")]
-            first = archive.read("ppt/slides/slide1.xml").decode("utf-8", "replace")
-        return len(slides), "IBM Plex" in first
-    except (OSError, zipfile.BadZipFile, KeyError):
-        return 0, False
-
-
-def newest_deck(workspace: Path) -> Path | None:
-    decks = [p for p in workspace.rglob("deck.pptx") if p.stat().st_size >= MIN_PPTX_BYTES]
-    return max(decks, key=lambda p: p.stat().st_mtime) if decks else None
-
-
-def judge(case: Case, result: CaseResult) -> None:
-    """Decide from disk, never from what the agent claimed."""
-    if not case.expect_deck:
-        if result.pptx is not None:
-            result.failures.append(
-                "a deck was built although the user never approved it — "
-                "the confirmation gate was skipped"
-            )
-        return
-
-    if result.pptx is None:
-        result.failures.append("no .pptx was produced")
-        return
-    if not result.has_plex:
-        result.failures.append(
-            "the .pptx does not carry IBM Plex — it was not rendered by Palette"
-        )
-    if case.expect_slides is not None and result.slides != case.expect_slides:
-        result.failures.append(
-            f"asked for {case.expect_slides} slides, got {result.slides}"
-        )
-    if "edit" in case.tags:
-        commands = result.commands()
-        if "edit" not in commands:
-            result.failures.append(
-                "the user asked for a change but edit-plan was never called "
-                f"(calls: {', '.join(commands) or 'none'})"
-            )
-        elif "plan" in commands[commands.index("edit") :]:
-            # Calling edit and then re-planning throws the revision away and
-            # pays for a second plan. Seen once, and it passed the old check
-            # because `edit` did appear in the trace.
-            result.failures.append(
-                "edit-plan was called and then the plan was drafted again from "
-                "scratch — the revision the user approved was discarded"
-            )
-
-    # Every poll is an agent turn. A run that spends forty of them asking "is it
-    # done yet" is one step-limit away from failing, and the deck it produced
-    # tells you nothing about how close it came.
-    polls = sum(1 for c in result.commands() if c in {"plan-status", "status"})
-    if polls > 12:
-        result.failures.append(
-            f"{polls} status polls — each is a model round trip, and the step "
-            f"budget is finite. The commands should be holding, not spinning"
-        )
-    if case.context and not any(
-        c.get("args", {}).get("context") for c in result.palette_calls
-    ):
-        result.failures.append(
-            "pasted material was never passed as --context; it was probably "
-            "retyped into the request, which loses the grounding"
-        )
-
-
 # --------------------------------------------------------------------- running
 
 
@@ -438,9 +345,31 @@ async def run_case(case: Case, cuga_home: Path, out_root: Path, timeout: int) ->
 # ------------------------------------------------------------------ reporting
 
 
+def configured_model() -> str:
+    """The model CUGA is actually set up to call, read from its settings.
+
+    This was a string literal — `"openai/gpt-oss-120b"` — until the day it
+    mattered. CUGA turned out to be loading `settings.watsonx.toml` rather than
+    RITS, so the report named the right model for the wrong reason and would
+    have gone on naming it after any config change. A report that states a model
+    it did not verify is worse than one that says it does not know.
+    """
+    try:
+        from cuga.config import settings
+
+        model = settings.get("agent", {}).get("chat", {}).get("model", {})
+        name = model.get("model_name") or model.get("platform")
+        if name:
+            return str(name)
+    except Exception:  # noqa: BLE001 - never fail a run over a label
+        pass
+    return "unknown (could not read CUGA's model settings)"
+
+
 def write_report(results: list[CaseResult], out_root: Path) -> Path:
     payload = {
-        "model": "openai/gpt-oss-120b",
+        "host": "cuga",
+        "model": configured_model(),
         "cases": len(results),
         "passed": sum(1 for r in results if r.ok),
         "results": [
@@ -547,7 +476,7 @@ def main(argv: list[str] | None = None) -> int:
     out_root = Path(args.out).expanduser().resolve() / time.strftime("%Y%m%d-%H%M%S")
     out_root.mkdir(parents=True, exist_ok=True)
 
-    print(f"running {len(selected)} case(s) against openai/gpt-oss-120b -> {out_root}")
+    print(f"running {len(selected)} case(s) against {configured_model()} -> {out_root}")
     results: list[CaseResult] = []
     for index, case in enumerate(selected, 1):
         print(f"[{index}/{len(selected)}] {case.name} … ", end="", flush=True)

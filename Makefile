@@ -10,7 +10,10 @@
         skill-test skill-install clean-state distclean hooks \
         skill-install-claude skill-package \
         serve-init serve-doctor serve-start serve-stop serve-status serve-logs \
-        serve-install serve-uninstall
+        serve-install serve-uninstall \
+        bench-inputs bench-cuga-ready bench-setup bench-check \
+        bench-cuga bench-react bench-claude bench-collect bench-all \
+        bench-compare bench-show bench-react-test bench-react-check bench-clean
 
 PORT ?= 18814
 
@@ -144,43 +147,164 @@ skill-package: ## Package the skill as dist/palette-skill.tar.gz (droppable into
 skill-test: ## Check the skill is self-consistent (no server, no network)
 	$(PY) -m pytest tests/test_skill.py -q
 
-bench: ## Run the CUGA benchmark (make bench CUGA=<path> [CASES=core])
-	@# Runs under CUGA's interpreter, not ours: the harness drives CUGA and
-	@# needs its dependencies. Everything else it needs is checked by --check.
-	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
-	$(CUGA)/.venv/bin/python benchmark/run.py $(if $(CASES),--cases $(CASES),)
+# --- Benchmark ---------------------------------------------------------------
+#
+# Three hosts run the same 33 conversations and are scored by one judge
+# (benchmark/verdict.py). See benchmark/BENCHMARK.md.
+#
+#   make bench-setup CUGA=<path>     once: install the skill where hosts read it
+#   make bench-check CUGA=<path>     verify every host, run nothing  ← always first
+#   make bench-all   CUGA=<path>     both automated hosts, then the comparison
+#
+# Two things every bench target needs:
+#   PALETTE_BENCH_INPUTS   directory holding the corpus documents (not in git)
+#   CUGA=<path>            a checkout whose venv has the runners' dependencies
+#
+# The CUGA interpreter is used throughout, including for the ReAct host: this
+# repo's venv has neither CUGA nor langgraph, and the failure that produces is
+# an unhelpful ModuleNotFoundError several imports deep.
 
-bench-claude: ## Prepare the Claude Code run sheet (make bench-claude CUGA=<path> [CASES=corpus])
-	@# Claude Code has no headless CLI here, so this prepares one directory per
-	@# case and prints what to paste; `bench-collect` harvests and judges them
-	@# with exactly the rules the CUGA runner uses.
-	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
-	$(CUGA)/.venv/bin/python benchmark/claude_run.py prepare $(if $(CASES),--cases $(CASES),)
+BENCH_PY := $(CUGA)/.venv/bin/python
+CASES_ARG = $(if $(CASES),--cases $(CASES),)
 
-bench-collect: ## Harvest and judge the Claude Code decks
-	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
-	$(CUGA)/.venv/bin/python benchmark/claude_run.py collect
+# One file for everything the benchmark needs. `~/.config/palette/env` is the
+# file `serve-init` already creates — mode 600, and the documented home for the
+# RITS key — so it is the single place. Override with PALETTE_ENV=<path>.
+#
+# What belongs in it:
+#   RITS_API_KEY=…            CUGA's model calls
+#   WATSONX_APIKEY=…          the ReAct host
+#   WATSONX_URL=…
+#   WATSONX_PROJECT_ID=…
+#   PALETTE_BENCH_INPUTS=…    the corpus documents
+#
+# PALETTE_HOME is not needed here: the Makefile always passes $(PWD), which is
+# right by construction and cannot go stale the way a written-down path can.
+PALETTE_ENV ?= $(HOME)/.config/palette/env
 
-bench-react: ## Run the LangGraph ReAct host (make bench-react CUGA=<path> [CASES=core] [EAGER=1])
-	@# The third host: watsonx openai/gpt-oss-120b, headless, fully automated.
-	@# It needs CUGA only for two things -- an interpreter that has langgraph
-	@# and langchain-ibm, and the .env holding the WATSONX_* credentials. It
-	@# does not drive CUGA and does not need the skill installed anywhere: it
-	@# reads skills/palette straight out of this checkout.
+# Only this file is *sourced*. CUGA's .env deliberately is not: it holds values
+# a shell tries to execute (`channels:read` on one line is a Slack scope, not a
+# command), so sourcing it prints errors and sets nothing. The ReAct runner
+# still reads it via `--env-file`, which parses rather than evaluates, and which
+# skips any variable already set — so it is a fallback, not a second source of
+# truth. Put WATSONX_* here and it stops being consulted at all.
+#
+# Note the precedence, because it is the opposite of what dotenv usually does:
+# **this file beats your shell.** `set -a; . file` assigns unconditionally, so
+# `FOO=x make bench-cuga` loses to a FOO in the file. To override for one run,
+# edit the file or point PALETTE_ENV somewhere else.
+LOAD_ENV = set -a; [ -f "$(PALETTE_ENV)" ] && . "$(PALETTE_ENV)"; set +a;
+
+bench-inputs: ## Check $PALETTE_BENCH_INPUTS points at a corpus (used by every bench target)
+	@$(LOAD_ENV) \
+	test -n "$$PALETTE_BENCH_INPUTS" || { \
+	  echo "error: PALETTE_BENCH_INPUTS is not set."; \
+	  echo "       It names the directory holding the corpus documents, which"; \
+	  echo "       are not in this repository."; \
+	  echo; \
+	  echo "       Set it in $(PALETTE_ENV), or export it:"; \
+	  echo "       export PALETTE_BENCH_INPUTS=/path/to/benchmark-inputs"; \
+	  exit 1; }
+	@$(LOAD_ENV) \
+	test -d "$$PALETTE_BENCH_INPUTS" || { \
+	  echo "error: PALETTE_BENCH_INPUTS=$$PALETTE_BENCH_INPUTS is not a directory"; exit 1; }
+	@$(LOAD_ENV) \
+	n=$$(ls -1 "$$PALETTE_BENCH_INPUTS"/*.md 2>/dev/null | wc -l | tr -d ' '); \
+	  test "$$n" -gt 0 || { \
+	    echo "error: no .md documents in $$PALETTE_BENCH_INPUTS"; exit 1; }; \
+	  echo "corpus: $$n document(s) in $$PALETTE_BENCH_INPUTS"
+
+bench-cuga-ready: ## Check the CUGA checkout can run a benchmark at all
+	@test -x "$(BENCH_PY)" || { \
+	  echo "error: no interpreter at $(BENCH_PY)"; \
+	  echo "       pass CUGA=<path-to-cuga-agent-checkout>, and make sure it is installed."; \
+	  exit 1; }
+
+bench-setup: bench-cuga-ready ## Install the skill into CUGA and Claude Code, then verify
+	@$(MAKE) --no-print-directory skill-install CUGA=$(CUGA)
+	@$(MAKE) --no-print-directory skill-install-claude
+	@echo
+	@$(MAKE) --no-print-directory bench-check CUGA=$(CUGA)
+
+bench-check: bench-inputs bench-cuga-ready ## Verify every host without running anything
+	@# One shell per recipe line, so each needs its own $(LOAD_ENV) — a single
+	@# one at the top would set variables that nothing after it can see.
+	@echo "--- cuga ---"
+	@$(LOAD_ENV) PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
+	  $(BENCH_PY) benchmark/run.py --check || true
+	@echo "--- react ---"
+	@$(LOAD_ENV) PALETTE_HOME=$(PWD) \
+	  $(BENCH_PY) benchmark/react_run.py --check --env-file $(CUGA)/.env || true
+	@echo "--- claude ---"
+	@test -f $(HOME)/.claude/skills/palette/SKILL.md \
+	  && echo "ready: skill installed at ~/.claude/skills/palette (a person types the utterances)" \
+	  || echo "not ready: run \`make skill-install-claude\`"
+
+bench-cuga: bench-inputs bench-cuga-ready ## CUGA, via its agent SDK (make bench-cuga CUGA=<path> [CASES=core])
+	@$(LOAD_ENV) \
+	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
+	$(BENCH_PY) benchmark/run.py $(CASES_ARG)
+
+bench-react: bench-inputs bench-cuga-ready ## LangGraph ReAct on watsonx (make bench-react CUGA=<path> [CASES=core] [EAGER=1])
+	@# Needs CUGA only for an interpreter with langgraph + langchain-ibm and for
+	@# the .env holding WATSONX_*. It does not drive CUGA, and the skill does not
+	@# need installing anywhere: it reads skills/palette out of this checkout.
+	@$(LOAD_ENV) \
 	PALETTE_HOME=$(PWD) \
-	$(CUGA)/.venv/bin/python benchmark/react_run.py --env-file $(CUGA)/.env \
-		$(if $(CASES),--cases $(CASES),) $(if $(EAGER),--eager,)
+	$(BENCH_PY) benchmark/react_run.py --env-file $(CUGA)/.env \
+	  $(CASES_ARG) $(if $(EAGER),--eager,)
 
-bench-react-check: ## Verify the ReAct host without running anything
+bench-react-check: bench-inputs bench-cuga-ready ## Verify only the ReAct host (no skill install needed)
+	@# Separate from bench-check because that one also checks CUGA's installed
+	@# copy of the skill. Working on this host alone should not require it.
+	@$(LOAD_ENV) \
 	PALETTE_HOME=$(PWD) \
-	$(CUGA)/.venv/bin/python benchmark/react_run.py --check --env-file $(CUGA)/.env
+	$(BENCH_PY) benchmark/react_run.py --check --env-file $(CUGA)/.env
+
+bench-claude: bench-inputs bench-cuga-ready ## Claude Code: write the run sheet you paste (then bench-collect)
+	@# Claude Code has no headless CLI here, so this half is prepare -> you paste
+	@# -> collect. Same cases, same judge; what differs is who types.
+	@$(LOAD_ENV) \
+	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
+	$(BENCH_PY) benchmark/claude_run.py prepare $(CASES_ARG)
+
+bench-collect: bench-inputs bench-cuga-ready ## Claude Code: harvest the decks and judge them
+	@$(LOAD_ENV) \
+	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
+	$(BENCH_PY) benchmark/claude_run.py collect
+
+bench-all: bench-inputs bench-cuga-ready ## Every automated host in sequence, then the comparison
+	@# Sequential on purpose: both hosts render decks, and two builds competing
+	@# for the machine turns a measurement into a measurement of contention.
+	@# `- ` prefixes so one failing host still leaves the other's numbers and
+	@# still reaches the comparison.
+	@echo "########## react ##########"
+	-@$(MAKE) --no-print-directory bench-react CUGA=$(CUGA) CASES=$(CASES)
+	@echo
+	@echo "########## cuga ##########"
+	-@$(MAKE) --no-print-directory bench-cuga CUGA=$(CUGA) CASES=$(CASES)
+	@echo
+	@echo "########## comparison ##########"
+	@$(MAKE) --no-print-directory bench-compare CUGA=$(CUGA)
+
+bench-compare: ## Side by side: newest run of each host, and where they disagree
+	@PALETTE_BENCH_INPUTS=$${PALETTE_BENCH_INPUTS:-/nonexistent} \
+	$(BENCH_PY) benchmark/compare.py
+
+bench-show: ## Read the newest run in depth (every call, every argument)
+	@PALETTE_BENCH_INPUTS=$${PALETTE_BENCH_INPUTS:-/nonexistent} \
+	$(BENCH_PY) benchmark/show.py $(if $(FAILURES),--failures,)
 
 bench-react-test: ## The ReAct host's own tests (offline, no model, no deck)
-	PALETTE_HOME=$(PWD) $(CUGA)/.venv/bin/python -m pytest agents/tests -q
+	PALETTE_HOME=$(PWD) $(BENCH_PY) -m pytest agents/tests -q
 
-bench-check: ## Verify the benchmark setup without running anything
-	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
-	$(CUGA)/.venv/bin/python benchmark/run.py --check
+bench-clean: ## Delete every recorded run (benchmark/runs/)
+	@# Reproducible, large, and per-machine — but they are also the only copy of
+	@# a result, and runs/ is gitignored. Says what it is about to remove.
+	@test -d benchmark/runs || { echo "nothing to clean"; exit 0; }
+	@du -sh benchmark/runs 2>/dev/null | sed 's/^/removing /'
+	@rm -rf benchmark/runs
+	@echo "removed benchmark/runs"
 
 verify: ## Check the skill where agents read it (make verify CUGA=<path> [DECK=1])
 	@# Takes the three locations as input: this checkout, a CUGA checkout, and

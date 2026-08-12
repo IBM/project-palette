@@ -60,6 +60,20 @@ class TestTheSkillIsLeftAlone:
             "the skill has uncommitted changes:\n" + done.stdout
         )
 
+    def test_no_test_module_shares_a_basename_with_the_repo_suite(self) -> None:
+        """Two `test_skill.py` files broke collection whenever both suites ran
+        in one pytest invocation — neither directory is a package, so pytest
+        cannot tell the modules apart. Individually each suite passed, which is
+        why it went unnoticed until someone ran `pytest tests agents/tests`.
+        """
+        mine = {p.name for p in (AGENTS_DIR / "tests").glob("test_*.py")}
+        theirs = {p.name for p in (REPO_ROOT / "tests").glob("test_*.py")}
+        clash = mine & theirs
+        assert not clash, (
+            f"these basenames exist in both test suites and will break "
+            f"collection when both are run together: {sorted(clash)}"
+        )
+
     def test_the_runner_is_registered_with_the_benchmark(self) -> None:
         """The other half of the same rule: integration belongs in the
         benchmark, not in the skill."""

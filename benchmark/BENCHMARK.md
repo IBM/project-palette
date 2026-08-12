@@ -1,22 +1,62 @@
 # Palette skill benchmark — CUGA, Claude Code, and a LangGraph ReAct agent
 
+[← Palette README](../README.md) · [CHEATSHEET](../CHEATSHEET.md) ·
+[the ReAct host](../agents/README.md) · [the skill itself](../skills/palette/SKILL.md)
+
 Thirty-three scripted conversations against the palette skill, on three hosts,
 scored by one judge that reads the filesystem rather than the transcript.
 
 ```
 benchmark/
-├── inputs/           13 real documents — the dataset
-├── corpus.py         reads them
 ├── cases.py          33 conversations
-├── run.py            CUGA, via the agent SDK (automated)
-├── claude_run.py     Claude Code (prepare → you paste → collect)
-├── react_run.py      LangGraph ReAct on watsonx (automated)
-├── show.py           read a run back
+├── corpus.py         reads the documents at $PALETTE_BENCH_INPUTS
+├── verdict.py        judge() — the one definition of a pass
+├── run.py            host: CUGA, via the agent SDK (automated)
+├── claude_run.py     host: Claude Code (prepare → you paste → collect)
+├── react_run.py      host: LangGraph ReAct on watsonx (automated)
+├── show.py           read one run in depth
+├── compare.py        put the hosts side by side
 └── runs/<timestamp>/
     ├── cuga/<case>/{input, output, cuga_workspace}
     ├── claude/<case>/{input, output, utterance.txt}
     └── react/<case>/{input, output, palette-calls.jsonl}
 ```
+
+## Before anything: one config file
+
+Everything the benchmark needs lives in **`~/.config/palette/env`** — the file
+`make serve-init` already creates, mode 600, and the documented home for the
+RITS key. The Makefile loads it for every `bench-*` target, so nothing needs
+exporting in your shell:
+
+```bash
+RITS_API_KEY=…              # CUGA's model calls
+WATSONX_APIKEY=…            # the ReAct host
+WATSONX_URL=…
+WATSONX_PROJECT_ID=…
+PALETTE_BENCH_INPUTS=…      # the corpus documents
+```
+
+`PALETTE_ENV=<path>` points at a different file. `PALETTE_HOME` is not needed —
+the Makefile passes `$(PWD)`, which cannot go stale the way a written-down path
+can.
+
+Two things worth knowing about how it loads:
+
+- **The file beats your shell.** `set -a; . file` assigns unconditionally, so
+  `FOO=x make bench-cuga` loses to a `FOO` in the file. Edit the file, or point
+  `PALETTE_ENV` elsewhere.
+- **CUGA's `.env` is read but never sourced.** It contains values a shell would
+  try to execute (`channels:read` on one line is a Slack scope, not a command).
+  The ReAct runner parses it via `--env-file` instead, and skips anything
+  already set — so it is a fallback for `WATSONX_*`, not a second source of
+  truth. Put those in the config file and it stops being consulted.
+
+**The corpus documents are internal material and are not checked in.**
+`$PALETTE_BENCH_INPUTS` names the directory. Unset, every command here stops
+rather than starting: there is deliberately no default and no in-repo fallback,
+because a corpus that silently resolves to an empty directory produces thirteen
+cases over nothing and reports it as a result.
 
 The ReAct host's agent lives in [`agents/palette_react/`](../agents/README.md);
 `react_run.py` is only the runner. The other two hosts are products you install
@@ -47,8 +87,8 @@ harness around them, which is what makes it a useful floor for the other two.
 
 ## The dataset
 
-`benchmark/inputs/` holds thirteen documents from real Palette use. They are
-already in Palette's plan format — `# Title`, `Audience:`, `Preferences:`,
+`$PALETTE_BENCH_INPUTS` holds thirteen documents from real Palette use. They
+are already in Palette's plan format — `# Title`, `Audience:`, `Preferences:`,
 `## sections` — which is how a user actually arrives: with a document, not a
 sentence.
 
@@ -94,24 +134,62 @@ expects **no deck at all**, so the suite cannot be passed by always building.
 
 ## Running it
 
-Nothing to export — the Makefile passes `PALETTE_HOME`, and `RITS_API_KEY` is
-read from CUGA's `.env`.
+One target per host, and one that runs them all. `PALETTE_HOME` and
+`RITS_API_KEY` are handled by the Makefile; `$PALETTE_BENCH_INPUTS` is yours.
 
 ```bash
 cd project-palette
+export PALETTE_BENCH_INPUTS=~/palette-benchmark-inputs
 C=~/code/cuga-agent
 
-make bench-check CUGA=$C            # verify setup, run nothing  ← always first
-make bench CUGA=$C CASES=core       # 5 cases, ~30 min
-make bench CUGA=$C CASES=corpus     # 13 decks from the documents, ~2 h
-make bench CUGA=$C                  # all 33
+make bench-setup CUGA=$C            # once: install the skill where hosts read it
+make bench-check CUGA=$C            # verify every host, run nothing  ← always first
+
+make bench-all   CUGA=$C CASES=core # both automated hosts, then the comparison
+make bench-cuga  CUGA=$C CASES=core # one host at a time
+make bench-react CUGA=$C CASES=core
+make bench-claude CUGA=$C CASES=core # writes the run sheet; you paste
+make bench-collect CUGA=$C           # …then harvest what Claude built
+
+make bench-compare                  # side by side, newest run per host
+make bench-show FAILURES=1          # newest run, in depth
+make bench-clean                    # delete every recorded run
 ```
 
-`bench-check` refuses to start if the installed skill has drifted from your
-checkout, or if CUGA cannot **discover** it. That second check exists because
-its absence cost an evening: undiscovered means the model is never offered the
-skill, writes a deck by hand, and every case fails in a way that looks like the
-skill's fault.
+Leave `CASES=` off for all 33. `CASES=core` is 5 and takes ~30 min per host;
+`CASES=corpus` is the 13 documents and takes ~2 h per host.
+
+**`bench-all` is sequential, not parallel.** Both automated hosts render decks,
+and two builds competing for the machine measures contention rather than the
+skill. It also keeps going if one host fails, so a broken CUGA still leaves you
+the react column and the comparison.
+
+Every target refuses to start unless `$PALETTE_BENCH_INPUTS` names a directory
+with documents in it, and unless `CUGA=` points at a checkout with a usable
+interpreter. `bench-check` additionally refuses if the installed skill has
+drifted from your checkout, or if CUGA cannot **discover** it. That last check
+exists because its absence cost an evening: undiscovered means the model is
+never offered the skill, writes a deck by hand, and every case fails in a way
+that looks like the skill's fault.
+
+### Reading the result
+
+`show.py` answers *what did this host do* — every call, every argument, and with
+`--verbose` the conversation. `compare.py` answers *where do the hosts
+disagree*:
+
+```
+case              cuga              react
+approve_casually  pass  6sl   386s  pass  7sl   200s
+conditional_yes   pass  5sl   207s  pass  5sl   333s
+edit_slide_count  pass  3sl   302s  pass  3sl   616s
+pasted_notes      FAIL  7sl   372s  pass  7sl   172s
+                    cuga: pasted material was never passed as --context
+plain_request     pass  5sl   323s  pass  5sl   299s
+```
+
+It prints the model each host ran and warns when they differ, because a table
+comparing scaffolds is only about scaffolds when the model is held fixed.
 
 ### Claude Code
 
@@ -119,15 +197,42 @@ Claude Code has no headless CLI here, so its half is prepare-and-collect:
 
 ```bash
 make bench-claude CUGA=$C CASES=corpus     # writes directories, prints the run sheet
-# … open Claude Code in each directory, paste the utterance, send each reply
+# … for each case:  cd <dir> && source env.sh, then open Claude Code and paste
 make bench-collect CUGA=$C                 # harvests the decks and judges them
 ```
 
-The run sheet gives you, per case, the directory to work in and the exact text
-to paste. The working directory matters: `collect` looks for the deck there.
+**Two steps per case, and both matter.**
 
-If a `claude` binary ever appears on PATH, `prepare --auto` drives it and the
-manual step disappears. It is detected, never assumed.
+`cd` into the case directory, because `collect` looks for the deck there.
+`source env.sh`, because it sets `$PALETTE_TRACE` — and `deck.py` writes its
+call trace only when that is set. The judge reads the trace to see whether
+`edit-plan` was called and whether pasted material reached `--context`, which
+**24 of the 33 cases depend on**. Skip it and they all fail on a missing trace
+while the decks sit on disk looking perfectly correct. `env.sh` is written per
+case; the run sheet prints the `cd … && source env.sh` line for you.
+
+Then paste `utterance.txt` and send each reply as the agent hands back.
+
+#### Making it headless
+
+`prepare --auto` drives the CLI if one is on PATH — detected, never assumed. To
+get there you need:
+
+1. **The CLI installed** — `npm i -g @anthropic-ai/claude-code`. There was none
+   on the machine this was written on, so **the `--auto` path has never run**.
+   Treat the first attempt as a shakedown, not a measurement.
+2. **Credentials in the environment Claude Code inherits** — `PALETTE_HOME` and
+   `RITS_API_KEY`. `_drive` sets `PALETTE_TRACE` and `PALETTE_HOME` itself.
+3. **A permission mode that does not stop to ask.** Claude Code prompts before
+   running shell commands; a headless run that blocks on a prompt looks like a
+   hang. Whichever flag your version uses, it has to be settled before a
+   33-case run.
+
+One thing `_drive` now gets right that it did not: `claude -p` is **one-shot**.
+Sending each reply as its own invocation starts a fresh session, so `"yes"`
+arrives with no plan to approve and every multi-turn case — the traps, the
+edits, the whole reason the suite exists — measures nothing. Replies after the
+first now pass `--continue`, which resumes that directory's conversation.
 
 ### The ReAct host
 
@@ -178,14 +283,41 @@ between them is what routing costs.
   finite step budget; a run that spends forty of them was one step limit away
   from failing, and the deck it produced tells you nothing about how close
 
-Every host imports the same `judge()` from `run.py`. Three hosts, one corpus,
-one scoring function — otherwise the comparison is theatre. `tests/
-test_benchmark.py` asserts it per runner, including that none of them defines a
-`judge` of its own: a local one would shadow the import silently, and the run
+Every host imports the same `judge()` from **`verdict.py`**. Three hosts, one
+corpus, one scoring function — otherwise the comparison is theatre.
+`tests/test_benchmark.py` asserts it per runner: that each imports from
+`verdict`, that the imported object is the same function, and that none defines
+a `judge` of its own. A local one would shadow the import silently and the run
 would still print a number.
 
-Adding a fourth host means adding its filename to `RUNNERS` in that file. The
-tests then hold it to the same rules.
+It lived inside `run.py` until there were three hosts, which meant the Claude
+and ReAct runners took their verdict *from the CUGA runner* — working, but
+inverted, and one stray module-level import in `run.py` from breaking both.
+
+## Adding a host
+
+A host is four things. Satisfy them and `judge()` scores it like any other:
+
+1. **Write `input/` beside `output/`** — `request.txt`, `context.md`,
+   `replies.txt`. A number whose question you cannot reproduce is not a
+   measurement.
+2. **Set `$PALETTE_TRACE` per case**, and clear it afterwards. `deck.py` writes
+   the call trace only when it is set; a leaked path appends the next case's
+   calls to the previous case's file.
+3. **Drive the opening message, then one reply each time the agent yields.** The
+   opening is `request` plus `context` pasted together — splitting them into
+   `--request` and `--context` is the agent's job, and one of the things scored.
+4. **Call `judge(case, result)`** from `verdict.py`. Not a local equivalent.
+
+Then add the filename to `RUNNERS` in `tests/test_benchmark.py` and a
+`bench-<host>` target to the Makefile. The tests hold it to the rules from
+there — a test fails if the Makefile has no target for it.
+
+Write results to `runs/<timestamp>/<host>/`, and record **what actually ran**:
+the model, and any budget that could have ended the run early. `react_run.py`
+reports `model`, `provider`, `skill_loading` and `recursion_limit` for that
+reason — a run that exhausted its step budget looks exactly like an agent that
+gave up, and only the report can tell them apart.
 
 ## What a run gives you
 
@@ -281,3 +413,16 @@ Every one of these came from a trace, not from a transcript:
 - 64 offline tests cover the harness itself, including that a case exists which
   *forbids* a deck. A benchmark that passes a case it should fail is worse than
   none: it turns an unnoticed regression into evidence there isn't one.
+
+---
+
+## Where to go next
+
+| | |
+|---|---|
+| a case failed and you want the raw calls | `make bench-show FAILURES=1`, then the run's `palette-calls.jsonl` |
+| the hosts disagree and you want to see where | `make bench-compare` |
+| something is broken and you want to reset it | [`CHEATSHEET.md`](../CHEATSHEET.md) |
+| you want to drive the ReAct host by hand | [`agents/README.md`](../agents/README.md) |
+| you want to change what the agent is told | [`skills/palette/SKILL.md`](../skills/palette/SKILL.md) — and re-install before measuring again |
+| you want Palette itself | [the README](../README.md) |

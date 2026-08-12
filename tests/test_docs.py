@@ -24,6 +24,11 @@ DOCS = [
     REPO_ROOT / "SKILL.md",
     REPO_ROOT / "CHEATSHEET.md",
     REPO_ROOT / "skills" / "palette" / "SKILL.md",
+    # The benchmark docs are under the same guard as the rest: they name a lot
+    # of `make bench-*` targets, and a doc that tells you to run a target that
+    # does not exist is worse than no doc.
+    REPO_ROOT / "benchmark" / "BENCHMARK.md",
+    REPO_ROOT / "agents" / "README.md",
 ]
 
 
@@ -137,20 +142,32 @@ def test_the_html_guide_is_reachable_from_the_readme() -> None:
     assert "docs/skill-guide.html" in (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
 
+#: What a doc has to name before it can claim to tell you how to run something.
+#: `PALETTE_HOME` is universal — every path into Palette shells into the
+#: checkout. The credential is not: the ReAct host talks to watsonx, so naming
+#: RITS there would be documenting a variable it never reads.
+REQUIRED_VARIABLES = {
+    REPO_ROOT / "agents" / "README.md": ("PALETTE_HOME", "WATSONX"),
+    REPO_ROOT / "benchmark" / "BENCHMARK.md": ("PALETTE_HOME", "RITS_API_KEY",
+                                               "PALETTE_BENCH_INPUTS"),
+}
+DEFAULT_VARIABLES = ("PALETTE_HOME", "RITS_API_KEY")
+
+
 @pytest.mark.parametrize("doc", DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
-def test_every_doc_names_both_environment_variables(doc: Path) -> None:
-    """Neither variable fails early, and neither fails legibly.
+def test_every_doc_names_the_variables_it_needs(doc: Path) -> None:
+    """None of these fails early, and none fails legibly.
 
     Without `RITS_API_KEY` a build runs several minutes before dying on a model
     call. Without `PALETTE_HOME` the skill cannot find the checkout it shells
-    into. Both read as Palette being broken rather than as setup being
-    incomplete, so any doc that tells you how to run something has to name
-    them — a doc that gets you started and omits one has sent you into that.
+    into. Without `PALETTE_BENCH_INPUTS` the benchmark has no corpus. All read
+    as Palette being broken rather than as setup being incomplete, so any doc
+    that tells you how to run something has to name the ones it depends on.
     """
     text = doc.read_text(encoding="utf-8")
-    for variable in ("PALETTE_HOME", "RITS_API_KEY"):
+    for variable in REQUIRED_VARIABLES.get(doc, DEFAULT_VARIABLES):
         assert variable in text, (
-            f"{doc.name} explains how to run Palette without mentioning {variable}"
+            f"{doc.name} explains how to run something without mentioning {variable}"
         )
 
 

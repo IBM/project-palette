@@ -1,7 +1,11 @@
 # Cheatsheet — tear down, restart, test
 
+[← Palette README](README.md) · [the benchmark](benchmark/BENCHMARK.md) ·
+[the ReAct host](agents/README.md) · [the skill](skills/palette/SKILL.md)
+
 Copy-pasteable. `README.md` explains Palette; this explains getting a working
-loop back after you have broken one.
+loop back after you have broken one. To *measure* the skill rather than smoke-test
+it, go to [`benchmark/BENCHMARK.md`](benchmark/BENCHMARK.md).
 
 Everything assumes you are in the Palette checkout, and that these are set:
 
@@ -22,6 +26,68 @@ cd ~/code/cuga-agent
 PALETTE_HOME=~/code/project-palette cuga start demo_palette
 # then, in the chat: "Build me a 5-slide deck about RAG"
 ```
+
+## 0b. Try it by hand, before you measure anything
+
+The benchmark scores 33 scripted conversations. Before trusting a number, have
+a few conversations yourself — you will recognise the failures much faster
+afterwards. Two hosts, both quick to start.
+
+```bash
+P=~/code/project-palette;  C=~/code/cuga-agent
+cd $P && export PALETTE_HOME=$PWD
+```
+
+### The ReAct agent — one command, nothing to install
+
+Reads `skills/palette` straight from the checkout, prints every command as it
+runs, and tells you at the end whether the deck is genuinely Palette's.
+
+```bash
+$C/.venv/bin/python agents/palette_react/cli.py --check --env-file $C/.env
+
+$C/.venv/bin/python agents/palette_react/cli.py --env-file $C/.env --trace \
+    --workspace /tmp/try-react \
+    "Build a 3-slide deck explaining prompt caching to backend engineers" \
+    --reply yes
+```
+
+Drop `--reply yes` to type the replies yourself — that is the interesting mode,
+because you can try the things the benchmark traps on (below).
+
+### CUGA — the chat UI
+
+```bash
+grep -q '^PALETTE_HOME=' $C/.env || echo "PALETTE_HOME=$P" >> $C/.env
+cd $C && .venv/bin/cuga start demo_palette
+```
+
+Then talk to it in the browser. `demo_palette` is the preset that loads the
+skill and allows the longer step budget a build needs.
+
+### Four conversations worth having
+
+Each is a real benchmark case, so you are previewing what gets measured.
+
+| Say this | Watch for |
+|---|---|
+| *"Build a 5-slide deck explaining RAG to backend engineers"* → `yes` | a plan **first**, then a deck. Five slides. |
+| paste a document, *"turn this into a deck"* → `yes` | it should pass your text to `--context`, not retype it into the request |
+| *"Build a deck about prompt caching"* → *"make it 3 slides"* → `yes` | the change must call `edit-plan`. Re-planning throws away the revision |
+| *"Build a 6-slide deck on incident response"* → *"yes, but drop the last slide"* | **the trap.** That is an *edit*, not approval. Building here hands back the deck you just corrected |
+
+With `--trace` on the ReAct host you can check each of these yourself:
+
+```bash
+cat /tmp/try-react/palette-calls.jsonl | python3 -m json.tool --json-lines 2>/dev/null \
+  || cat /tmp/try-react/palette-calls.jsonl
+```
+
+`find → plan → start → status` is the healthy shape. An `edit` between `plan`
+and `start` is what the third row should produce; a `plan` *after* an `edit`
+means the revision was discarded.
+
+Then measure it properly: [`benchmark/BENCHMARK.md`](benchmark/BENCHMARK.md).
 
 ## 1. Clean slate, end to end
 
@@ -131,9 +197,11 @@ The only host you do not have to talk to. Nothing to install: it reads
 ```bash
 cd $P
 export PALETTE_HOME=$PWD
+# Credentials and the corpus path live in ~/.config/palette/env — see
+# benchmark/BENCHMARK.md. Nothing to export for the bench targets.
 
-$C/.venv/bin/python -m pytest agents/tests -q                  # offline, ~3s
-$C/.venv/bin/python benchmark/react_run.py --check --env-file $C/.env
+make bench-react-test                                    # offline, ~3s
+make bench-check CUGA=$C                                 # every host, runs nothing
 
 $C/.venv/bin/python agents/palette_react/cli.py --env-file $C/.env --trace \
     --workspace /tmp/palette-smoke \

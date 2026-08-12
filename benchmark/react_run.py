@@ -14,8 +14,8 @@ that hands over SKILL.md when asked. No planner, no todo list, no subagents. A
 case it passes was passed by the instructions, not by the harness around them.
 
 The agent itself lives in `agents/palette_react/`; this file is the runner, and
-it imports `judge` from `run.py` rather than reimplementing it. Two hosts scored
-by two rules is not a comparison, and neither is three.
+it imports `judge` from `verdict.py` rather than reimplementing it. Two hosts
+scored by two rules is not a comparison, and neither is three.
 
 Results land in `benchmark/runs/<timestamp>/react/<case>/`, beside `cuga/` and
 `claude/`, in the same input/output shape.
@@ -42,8 +42,14 @@ AGENTS_DIR = REPO_ROOT / "agents"
 sys.path.append(str(BENCHMARK_DIR))
 sys.path.append(str(AGENTS_DIR))
 
-from cases import CASES, by_tag  # noqa: E402
-from run import CaseResult, inspect_deck, judge, newest_deck  # noqa: E402
+# The corpus lives at $PALETTE_BENCH_INPUTS and cases.py reads it on import, so
+# a missing variable surfaces here. Re-raised as SystemExit: the message is
+# already actionable, and a traceback through the import machinery buries it.
+try:
+    from cases import CASES, by_tag  # noqa: E402
+except Exception as exc:  # noqa: BLE001 - corpus.CorpusNotConfigured, or a bad path
+    raise SystemExit(f"error: {exc}") from None
+from verdict import CaseResult, inspect_deck, judge, newest_deck  # noqa: E402
 
 from palette_react import model as model_factory  # noqa: E402
 from palette_react import skill as skill_loader  # noqa: E402
@@ -116,7 +122,7 @@ def run_case(case, card, out_root: Path, options) -> CaseResult:
             [card],
             model_factory.build(options.model),
             lazy=not options.eager,
-            timeout=options.timeout,
+            timeout=options.command_timeout,
             recursion_limit=options.recursion_limit,
             thread_id=f"bench-{case.name}-{uuid.uuid4().hex[:6]}",
         )
@@ -257,8 +263,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--eager", action="store_true",
                         help="inline the skill body — removes the routing decision")
     parser.add_argument("--recursion-limit", type=int, default=DEFAULT_RECURSION_LIMIT)
-    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
-                        help="per-command ceiling in seconds")
+    parser.add_argument("--command-timeout", type=int, default=DEFAULT_TIMEOUT,
+                        help="ceiling for one shell command in seconds "
+                             "(a plan holds 90s, a status poll 60s)")
     parser.add_argument("--turn-timeout", type=int, default=DEFAULT_TURN_TIMEOUT)
     parser.add_argument("--check", action="store_true", help="verify the setup and exit")
     parser.add_argument("--list", action="store_true", help="list the cases and exit")

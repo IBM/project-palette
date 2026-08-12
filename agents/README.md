@@ -1,5 +1,8 @@
 # A LangGraph ReAct host for the Palette skill
 
+[← Palette README](../README.md) · [the benchmark](../benchmark/BENCHMARK.md) ·
+[the skill it drives](../skills/palette/SKILL.md)
+
 A third host for `benchmark/`, beside CUGA and Claude Code. It is the thinnest
 scaffold that can use a skill at all — a model, a shell, and a loader — and it
 runs **watsonx `openai/gpt-oss-120b`** by default.
@@ -12,7 +15,7 @@ agents/
 │   ├── tools.py     load_skill + a shell pinned to the workspace
 │   ├── agent.py     create_react_agent, lazy skill loading
 │   └── cli.py       drive it by hand ← start here
-├── tests/           73 offline tests
+├── tests/           82 offline tests
 └── requirements.txt
 
 benchmark/react_run.py   the benchmark runner, beside run.py and claude_run.py
@@ -95,11 +98,16 @@ arrive *during* the turn rather than all at the end.
 
 ## Run the benchmark
 
+The corpus documents live outside the repo, so point at them first:
+
 ```bash
-make bench-react-check CUGA=<cuga-checkout>
-make bench-react       CUGA=<cuga-checkout> CASES=core     # 5 cases
-make bench-react       CUGA=<cuga-checkout> CASES=corpus   # the 13 documents
-make bench-react       CUGA=<cuga-checkout> EAGER=1        # inline the skill
+export PALETTE_BENCH_INPUTS=~/palette-benchmark-inputs
+
+make bench-check CUGA=<cuga-checkout>                      # every host
+make bench-react CUGA=<cuga-checkout> CASES=core           # 5 cases
+make bench-react CUGA=<cuga-checkout> CASES=corpus         # the 13 documents
+make bench-react CUGA=<cuga-checkout> EAGER=1              # inline the skill
+make bench-all   CUGA=<cuga-checkout> CASES=core           # + CUGA, then compare
 make bench-react-test                                      # these tests
 ```
 
@@ -109,6 +117,11 @@ Or directly, which is what those targets run:
 $PY benchmark/react_run.py --check --env-file $ENV
 $PY benchmark/react_run.py --env-file $ENV --cases core
 ```
+
+`--command-timeout` bounds one shell command (default 300s); `--turn-timeout`
+bounds a whole turn (default 1500s). They are named apart on purpose — the two
+were both called `--timeout` across the runners, which throttled a conversation
+when you meant to throttle a poll.
 
 Results land in `benchmark/runs/<timestamp>/react/`, in the same shape as
 `cuga/` and `claude/`: `input/` beside `output/`, plus `palette-calls.jsonl`.
@@ -137,11 +150,24 @@ request containing no deck vocabulary. Both modes are available and the report
 records which ran, so the eager-minus-lazy delta measures what routing costs.
 
 SKILL.md refers to its own script as `skills/palette/scripts/deck.py`, a path
-relative to a skills root it cannot know. This host supplies that root **in its
-own system prompt**, never by editing the skill. `tests/test_skill.py` pins the
-body against the file byte-for-byte, and `tests/test_agent.py` checks the host
-prompt contains no Palette vocabulary — location is the host's job, behaviour
-is the skill's.
+relative to a skills root it cannot know. The host answers that by **staging a
+fresh copy of the skill into the case workspace**, so the path the instructions
+give is simply correct — the same thing CUGA and Claude Code get from having an
+installed copy. A copy rather than a symlink, rebuilt per run: an agent cannot
+damage the checkout through it, and it cannot go stale.
+
+Before staging existed, the first command of every run failed and the agent
+spent a round trip discovering it:
+
+```
+→ python skills/palette/scripts/deck.py find --root .
+← python: can't open file '.../skills/palette/scripts/deck.py'
+→ python /abs/path/to/skills/palette/scripts/deck.py find --root .
+```
+
+`tests/test_skill_loader.py` pins the loaded body against the file
+byte-for-byte, and `tests/test_agent.py` checks the host prompt contains no
+Palette vocabulary — location is the host's job, behaviour is the skill's.
 
 ## Two knobs that will bite if you leave them alone
 
@@ -149,14 +175,14 @@ is the skill's.
   is roughly twelve model turns — less than one deck, given the judge alone
   tolerates twelve status polls. Hitting the ceiling looks exactly like the
   agent giving up, so it is set high and printed with every run.
-- **`--timeout`** (per shell command) defaults to **300s**. `plan` holds its
-  call open for up to 90s and `status` for 60s by design. A 30s default would
-  fail every case and look like Palette breaking.
+- **`--command-timeout`** (one shell command) defaults to **300s**. `plan`
+  holds its call open for up to 90s and `status` for 60s by design. A 30s
+  default would fail every case and look like Palette breaking.
 
 ## Tests
 
 ```bash
-PALETTE_HOME=$PWD $PY -m pytest agents/tests -q      # 73, all offline
+PALETTE_HOME=$PWD $PY -m pytest agents/tests -q      # 82, all offline
 make bench-react-test                                # the same thing
 ```
 

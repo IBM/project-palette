@@ -21,6 +21,10 @@ sys.path.insert(0, str(REPO_ROOT / "benchmark"))
 from cases import CASES, by_tag  # noqa: E402
 from run import CaseResult, judge  # noqa: E402
 
+#: One file per host. Adding a host means adding it here, which is how these
+#: tests stay true as the set grows.
+RUNNERS = ("run.py", "claude_run.py", "react_run.py")
+
 
 class TestTheCases:
     def test_there_are_enough_to_be_a_benchmark(self) -> None:
@@ -252,8 +256,9 @@ class TestTheCorpus:
     """The input documents are the benchmark's data, so they must be real.
 
     Thirteen came out of actual Palette use — all-hands decks, a Q3 review, a
-    competitive brief, an architecture. They live in `benchmark/inputs/` as
-    files rather than string constants so you can drop your own in beside them.
+    competitive brief, an architecture. They live at `$PALETTE_BENCH_INPUTS`,
+    outside the repository, as files rather than string constants — so you can
+    drop your own in beside them, and so internal material is never committed.
     """
 
     def test_the_documents_are_present(self) -> None:
@@ -264,7 +269,7 @@ class TestTheCorpus:
 
     def test_every_corpus_case_points_at_a_real_file(self) -> None:
         """A case built from a document that has been deleted is a silent gap."""
-        from corpus import INPUTS
+        from corpus import inputs_dir
 
         corpus_cases = [c for c in CASES if "corpus" in c.tags]
         assert corpus_cases, "no case uses the input corpus"
@@ -273,7 +278,7 @@ class TestTheCorpus:
             assert len(case.context) > 500, (
                 f"{case.name} pastes {len(case.context)} chars — too little to be one of these documents"
             )
-        assert INPUTS.is_dir()
+        assert inputs_dir().is_dir()
 
     def test_there_are_enough_data_points(self) -> None:
         """The ask was 15-20 decks from real material."""
@@ -284,6 +289,113 @@ class TestTheCorpus:
 
         with pytest.raises(FileNotFoundError, match="Available:"):
             read("no-such-file.md")
+
+
+class TestTheCorpusDirectoryIsConfigured:
+    """The documents are internal material, so they live outside the repo.
+
+    `$PALETTE_BENCH_INPUTS` names the directory. There is deliberately no
+    default and no in-repo fallback: a corpus that quietly resolves to an empty
+    folder produces thirteen cases over nothing and reports it as a result.
+    """
+
+    def test_an_unset_variable_raises_with_the_variable_named(self, monkeypatch) -> None:
+        import corpus
+
+        monkeypatch.delenv("PALETTE_BENCH_INPUTS", raising=False)
+        with pytest.raises(corpus.CorpusNotConfigured) as caught:
+            corpus.inputs_dir()
+        message = str(caught.value)
+        assert "PALETTE_BENCH_INPUTS" in message
+        assert "export" in message, "the error does not say how to fix it"
+
+    def test_a_path_that_is_not_a_directory_is_rejected(self, monkeypatch, tmp_path) -> None:
+        import corpus
+
+        monkeypatch.setenv("PALETTE_BENCH_INPUTS", str(tmp_path / "absent"))
+        with pytest.raises(corpus.CorpusNotConfigured, match="not a directory"):
+            corpus.inputs_dir()
+
+    def test_it_reads_from_wherever_the_variable_points(self, monkeypatch, tmp_path) -> None:
+        import corpus
+
+        (tmp_path / "somewhere_else.md").write_text("# Moved\n", encoding="utf-8")
+        monkeypatch.setenv("PALETTE_BENCH_INPUTS", str(tmp_path))
+        assert corpus.read("somewhere_else.md") == "# Moved\n"
+        assert [p.name for p in corpus.documents()] == ["somewhere_else.md"]
+
+    def test_no_runner_falls_back_to_an_in_repo_directory(self) -> None:
+        """A default would defeat the point: the run would succeed, over nothing."""
+        source = (REPO_ROOT / "benchmark" / "corpus.py").read_text(encoding="utf-8")
+        assert 'parent / "inputs"' not in source
+        assert "os.environ.get(INPUTS_ENV" in source
+
+    @pytest.mark.parametrize("name", RUNNERS)
+    def test_a_runner_started_without_it_exits_cleanly(self, name: str) -> None:
+        """cases.py reads the corpus on import, so the failure lands in the
+        import machinery. Each runner re-raises it as SystemExit, because a
+        traceback through six frames buries the one line that matters."""
+        source = (REPO_ROOT / "benchmark" / name).read_text(encoding="utf-8")
+        assert "raise SystemExit(f\"error: {exc}\") from None" in source
+
+
+class TestTheClaudeHostCanBeScoredAtAll:
+    """A host with no call trace fails 24 of the 33 cases whatever it does.
+
+    `deck.py` writes its trace only when `$PALETTE_TRACE` is set, and the judge
+    reads it to see whether `edit-plan` was called and whether pasted material
+    reached `--context`. Eight `edit` cases and seventeen `context` cases depend
+    on one of those. This runner set the variable nowhere, so every one of them
+    failed on a missing trace while the decks sat on disk looking correct.
+    """
+
+    def test_prepare_writes_the_exports_a_person_must_source(self, tmp_path) -> None:
+        import claude_run
+
+        case = next(c for c in CASES if c.name == "plain_request")
+        claude_run.prepare([case], tmp_path, auto=False)
+
+        env = tmp_path / "claude" / "plain_request" / "env.sh"
+        assert env.is_file(), "nothing tells the operator to set $PALETTE_TRACE"
+        text = env.read_text(encoding="utf-8")
+        assert "PALETTE_TRACE" in text and "palette-calls.jsonl" in text
+        assert "PALETTE_HOME" in text
+
+    def test_the_run_sheet_says_to_source_it(self, tmp_path, capsys) -> None:
+        """A file nobody is told to source is a file nobody sources."""
+        case = next(c for c in CASES if c.name == "plain_request")
+        import claude_run
+
+        claude_run.prepare([case], tmp_path, auto=False)
+        printed = capsys.readouterr().out
+        assert "source env.sh" in printed
+        assert "cannot be scored" in printed, (
+            "the run sheet does not say what skipping it costs"
+        )
+
+    def test_the_headless_driver_keeps_one_conversation_per_case(self) -> None:
+        """`claude -p` is one-shot. Sending the replies as separate invocations
+        starts a fresh session each time, so "yes" arrives with no plan to
+        approve and every multi-turn case measures nothing."""
+        source = (REPO_ROOT / "benchmark" / "claude_run.py").read_text(encoding="utf-8")
+        drive = source[source.index("def _drive") : source.index("def _run_sheet")]
+        assert "--continue" in drive, (
+            "the driver starts a new conversation for every reply"
+        )
+        assert "PALETTE_TRACE" in drive, "the headless path writes no trace either"
+
+
+class TestTheFlagsMeanTheSameThingEverywhere:
+    def test_timeout_is_per_turn_on_every_host(self) -> None:
+        """`--timeout` meant "one turn" in run.py and "one shell command" in the
+        ReAct runner, which also had `--turn-timeout`. Same word, different unit
+        of work, and no error if you got it wrong — just a throttled run."""
+        react = (REPO_ROOT / "benchmark" / "react_run.py").read_text(encoding="utf-8")
+        assert '"--command-timeout"' in react
+        assert '"--timeout"' not in react, (
+            "react_run.py has a --timeout again; it must be --command-timeout, "
+            "because --timeout means a whole turn in run.py"
+        )
 
 
 class TestTheSandboxPolicyIsRebuiltPerCase:
@@ -350,11 +462,6 @@ class TestTheSandboxPolicyIsRebuiltPerCase:
         assert chdir < reset
 
 
-#: One file per host. Adding a host means adding it here, which is how these
-#: tests stay true as the set grows.
-RUNNERS = ("run.py", "claude_run.py", "react_run.py")
-
-
 class TestEveryHostIsScoredTheSameWay:
     """Three hosts, one corpus, one judge — otherwise the comparison is theatre."""
 
@@ -362,16 +469,34 @@ class TestEveryHostIsScoredTheSameWay:
         for name in RUNNERS:
             assert (REPO_ROOT / "benchmark" / name).is_file(), f"no benchmark/{name}"
 
-    @pytest.mark.parametrize("name", RUNNERS[1:])
-    def test_the_other_runners_import_the_shared_judge(self, name: str) -> None:
-        """run.py owns `judge`; every other host has to import it rather than
-        write one, or its numbers cannot be compared with CUGA's."""
+    @pytest.mark.parametrize("name", RUNNERS)
+    def test_every_runner_imports_the_shared_judge(self, name: str) -> None:
+        """`verdict.py` owns the judge and no host does.
+
+        It used to live in run.py, which meant the other two imported their
+        verdict from the CUGA runner — working, but inverted, and one stray
+        module-level import away from breaking both.
+        """
         source = (REPO_ROOT / "benchmark" / name).read_text(encoding="utf-8")
-        assert "from run import" in source and "judge" in source, (
+        assert "from verdict import" in source and "judge" in source, (
             f"{name} scores with its own rules"
         )
+        assert "from run import" not in source, (
+            f"{name} still takes its verdict from a sibling host's runner"
+        )
 
-    @pytest.mark.parametrize("name", RUNNERS[1:])
+    def test_the_judge_is_one_object_everywhere(self) -> None:
+        """The textual check above cannot see through an alias; this can."""
+        import verdict
+
+        for name in RUNNERS:
+            module = pytest.importorskip(
+                name.removesuffix(".py"),
+                reason="host dependencies not installed in this interpreter",
+            )
+            assert module.judge is verdict.judge, f"{name} judges with something else"
+
+    @pytest.mark.parametrize("name", RUNNERS)
     def test_no_runner_redefines_the_verdict(self, name: str) -> None:
         """A local `def judge` shadows the import silently — the run still
         prints a number, and the number means something else."""

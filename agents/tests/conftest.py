@@ -22,6 +22,13 @@ SKILLS_ROOT = REPO_ROOT / "skills"
 
 sys.path.insert(0, str(AGENTS_DIR))
 
+# test_bench.py imports the benchmark runner, which imports cases.py, which
+# reads the corpus at import time. Same bootstrap the repo suite uses.
+sys.path.insert(0, str(REPO_ROOT / "tests"))
+from _corpus_fixture import ensure_corpus  # noqa: E402
+
+ensure_corpus()
+
 from langchain_core.callbacks import CallbackManagerForLLMRun  # noqa: E402
 from langchain_core.language_models import BaseChatModel  # noqa: E402
 from langchain_core.messages import AIMessage, BaseMessage  # noqa: E402

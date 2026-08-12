@@ -50,5 +50,7 @@ skills/**/*.pyc
 # Benchmark run output: decks, traces and reports. Reproducible, large,
 # and per-machine — the harness and its cases are the source of truth.
 benchmark/runs/
+# The input corpus now lives outside the repo entirely, at
+# $PALETTE_BENCH_INPUTS. Kept ignored so a stray copy here is never committed.
 benchmark/inputs/
 cuga_workspace/

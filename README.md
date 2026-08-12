@@ -470,13 +470,34 @@ tests/             Contract tests binding the skill to palette.py's CLI
 | **this file** | you want to run Palette — install, the web UI, config, containers, deployment |
 | [`CHEATSHEET.md`](CHEATSHEET.md) | something is broken and you want to reset it, or you want the test loop in six lines |
 | [`docs/skill-guide.html`](docs/skill-guide.html) | you are showing this to someone — a single page covering try it, test it, and what broke. `open docs/skill-guide.html`, or serve `docs/` anywhere |
-| [`benchmark/BENCHMARK.md`](benchmark/BENCHMARK.md) | you want to measure the skill: 33 scripted conversations over 13 real documents, on three hosts, with every Palette call traced |
+| [`benchmark/BENCHMARK.md`](benchmark/BENCHMARK.md) | you want to measure the skill: 33 scripted conversations over 13 real documents, on three hosts, with every Palette call traced. Start with `make bench-check`; the documents live at `$PALETTE_BENCH_INPUTS`, outside this repo |
 | [`agents/README.md`](agents/README.md) | you want a host this repo builds rather than one you install into — a LangGraph ReAct agent on watsonx, drivable from the command line and useful for isolating the model from the scaffold |
 | [`docs/skill-flow-in-cuga.md`](docs/skill-flow-in-cuga.md) | you want to know what actually happens between "build me a deck" and a `.pptx` — discovery, routing, sandbox, completion. Sequence diagram plus the code path |
 | [`SKILL.md`](SKILL.md) | you want the agent-facing instructions on their own |
 | [`skills/palette/SKILL.md`](skills/palette/SKILL.md) | you are looking at what actually ships to a host, including the long-build path |
 | [`skills/palette/scripts/deck.py`](skills/palette/scripts/deck.py) | you need to know how a build survives a step limit |
+| [`benchmark/verdict.py`](benchmark/verdict.py) | you want to know exactly what counts as a pass — one `judge()`, shared by every host, reading the filesystem rather than the transcript |
 | `tests/test_skill.py` | you want to see what keeps the skill and `palette.py` in agreement |
+| `tests/test_benchmark.py` | you want to see what keeps the *benchmark* honest — including a case that must produce no deck |
+
+### Measuring the skill, in one place
+
+The benchmark is the answer to "did that change help?". Three hosts run the same
+33 conversations and one judge scores them all:
+
+```bash
+make bench-setup CUGA=<cuga-checkout>             # once: install the skill for each host
+make bench-check CUGA=<cuga-checkout>             # verify every host, run nothing
+make bench-all   CUGA=<cuga-checkout> CASES=core  # 5 cases per host, then compare
+```
+
+Credentials and paths come from one file, `~/.config/palette/env` — the same one
+`make serve-init` creates. Add `WATSONX_*` for the ReAct host and
+`PALETTE_BENCH_INPUTS` for the corpus documents (which are not in this repo), and
+nothing needs exporting in your shell.
+
+Full detail — the cases, the scoring rules, how to add a host — is in
+[`benchmark/BENCHMARK.md`](benchmark/BENCHMARK.md).
 
 ## License
 

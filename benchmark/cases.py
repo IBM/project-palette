@@ -264,7 +264,7 @@ CASES: tuple[Case, ...] = (
     ),
 
     # ---------------------------------------------------------------- corpus
-    # One per document in benchmark/inputs/. These are the data points: real
+    # One per document in $PALETTE_BENCH_INPUTS. These are the data points: real
     # material, pasted the way a user pastes it, one deck each. The slide count
     # is the agent's call, so it is not asserted -- what is asserted is that a
     # real Palette deck came out and the document reached --context.
