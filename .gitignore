@@ -54,3 +54,5 @@ benchmark/runs/
 # $PALETTE_BENCH_INPUTS. Kept ignored so a stray copy here is never committed.
 benchmark/inputs/
 cuga_workspace/
+benchmark/-runs/
+benchmark/decks-react/

@@ -777,3 +777,139 @@ class TestTheAgentDoesNotSubstituteItself:
         flowed = " ".join(skill_text().split())
         assert "relay its error verbatim" in flowed
         assert "Do not describe a failure you did not see" in flowed
+
+
+#: Shaped like the document that produced the failure: a title, figures, a
+#: bulleted list. Comfortably over the guard's threshold, as a real paste is.
+PASTED_DOCUMENT = """\
+Q3 platform review - raw notes
+
+Adoption: 41% of enterprise deck production moved off manual authoring.
+Median time-to-first-draft: 4.5 hours -> 11 minutes, across 38 teams.
+Brand review passes: 3 rounds -> 1, since the renderer enforces IBM Plex.
+
+Still rough:
+- image sourcing is manual and slow
+- decks over 20 slides need a geometry repair pass, ~90s
+- no template story for regulated business units yet
+
+Asks for Q4: an image service, a template registry, and headcount for one
+designer to own the visual system.
+"""
+
+
+class TestPastedMaterialReachesTheRightSlot:
+    """A document in `--request` with nothing in `--context`.
+
+    Measured, on CUGA: a user pasted "Turn these Q3 notes into an exec deck"
+    followed by the notes. The agent sent the notes as `--request`, no context
+    at all, and dropped the instruction — then built a deck that looked fine.
+    Two other hosts on identical input sent a 37-character request and a
+    517-character context.
+
+    Prose was not the fix: SKILL.md says to use `--context` in three separate
+    places. These are the guards, which is the pattern `start` and `plan`
+    already use.
+    """
+
+    def _plan(self, tmp_path: Path, request: str, *extra: str):
+        return subprocess.run(
+            [sys.executable, str(DECK_PY), "plan", "--request", request,
+             "--out", str(tmp_path / "plan.md"), *extra],
+            capture_output=True, text=True, cwd=str(tmp_path),
+            env={**os.environ, "PALETTE_HOME": str(REPO_ROOT)},
+        )
+
+    def test_a_pasted_document_in_request_is_refused(self, tmp_path: Path) -> None:
+        result = self._plan(tmp_path, PASTED_DOCUMENT)
+
+        assert result.returncode != 0, "a silent success is the failure being fixed"
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is False
+        assert "--context" in payload["error"] or "--context" in payload["fix"]
+        assert "--source" in payload["fix"], "the file route is not offered"
+
+    def test_the_refusal_says_what_to_do(self, tmp_path: Path) -> None:
+        """An error the agent cannot act on costs a turn and changes nothing."""
+        document = PASTED_DOCUMENT
+        payload = json.loads(self._plan(tmp_path, document).stdout)
+        assert "--request" in payload["fix"] and "--context" in payload["fix"]
+
+
+    def test_material_passed_correctly_is_not_refused(self) -> None:
+        sys.path.insert(0, str(DECK_PY.parent))
+        import deck  # noqa: PLC0415
+
+        assert deck._looks_like_pasted_material(PASTED_DOCUMENT)
+        assert not deck._looks_like_pasted_material("Turn these Q3 notes into an exec deck")
+        assert not deck._looks_like_pasted_material("x" * 900), "single line is not a document"
+
+
+class TestIndentationLeakedByAHostIsRepaired:
+    """Agents write a program that runs the command rather than typing it, so a
+    pasted document becomes a literal inside that program and picks up its
+    indentation — on every line but the first, which follows the opening quote.
+
+    Measured: 485 characters arrived as 521, the difference being exactly nine
+    continuation lines by four spaces.
+    """
+
+    def _deck(self):
+        sys.path.insert(0, str(DECK_PY.parent))
+        import deck  # noqa: PLC0415
+
+        return deck
+
+    def test_the_leaked_indent_is_stripped(self) -> None:
+        deck = self._deck()
+        leaked = "First line flush.\n    Second indented.\n    Third indented."
+        assert deck._unindent(leaked) == "First line flush.\nSecond indented.\nThird indented."
+
+    def test_textwrap_dedent_cannot_do_this(self) -> None:
+        """The reason this function exists: the common prefix across all lines
+        is empty, precisely because line one is flush."""
+        import textwrap
+
+        leaked = "First line flush.\n    Second indented."
+        assert textwrap.dedent(leaked) == leaked
+
+    def test_a_uniformly_indented_document_is_left_alone(self) -> None:
+        """Someone pasting an indented code block meant that indentation."""
+        deck = self._deck()
+        block = "    def f():\n        return 1\n    f()"
+        assert deck._unindent(block) == block
+
+    def test_ordinary_text_is_untouched(self) -> None:
+        deck = self._deck()
+        for text in ("one line", "two\nlines", "a\nb\nc", ""):
+            assert deck._unindent(text) == text
+
+    def test_a_short_document_is_still_a_document(self) -> None:
+        """Measured: 310 characters over eighteen lines slipped under a
+        size-only threshold — a title, an audience line and a preferences block
+        pasted into `--request`. Short, and unmistakably not typed."""
+        sys.path.insert(0, str(DECK_PY.parent))
+        import deck  # noqa: PLC0415
+
+        short_document = (
+            "Turn this into a deck\n\n# CUGA Hackathon Kick off!\n\n"
+            "Audience: IBM SIL\nSlides: 14\n\nPreferences:\n- Background: light\n"
+            "- Tone: candid\n\n## Why we are here\n- one\n- two\n\n## The plan\n"
+            "- three\n- four\n"
+        )
+        assert len(short_document) < deck._PASTED_REQUEST_CHARS
+        assert deck._looks_like_pasted_material(short_document), (
+            "a short document still ducks the guard"
+        )
+
+    def test_a_request_someone_typed_is_not_caught(self) -> None:
+        """The false positive that matters: refusing real instructions."""
+        sys.path.insert(0, str(DECK_PY.parent))
+        import deck  # noqa: PLC0415
+
+        for typed in (
+            "Build me a 5-slide deck explaining RAG to backend engineers",
+            "Make a deck about on-call.\n\nKeep it short and make it friendly.",
+            "Build a deck covering:\n- ingestion\n- training\n- serving",
+        ):
+            assert not deck._looks_like_pasted_material(typed), typed[:40]

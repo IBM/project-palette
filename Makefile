@@ -13,7 +13,8 @@
         serve-install serve-uninstall \
         bench-inputs bench-cuga-ready bench-setup bench-check \
         bench-cuga bench-react bench-claude bench-collect bench-all \
-        bench-compare bench-show bench-react-test bench-react-check bench-clean
+        bench-compare bench-report bench-show bench-react-test \
+        bench-react-check bench-clean
 
 PORT ?= 18814
 
@@ -290,6 +291,9 @@ bench-all: bench-inputs bench-cuga-ready ## Every automated host in sequence, th
 bench-compare: ## Side by side: newest run of each host, and where they disagree
 	@PALETTE_BENCH_INPUTS=$${PALETTE_BENCH_INPUTS:-/nonexistent} \
 	$(BENCH_PY) benchmark/compare.py
+
+bench-report: ## Write one Markdown report across every host -> benchmark/runs/REPORT.md
+	@$(LOAD_ENV) $(BENCH_PY) benchmark/report.py $(if $(RUN),--run $(RUN),)
 
 bench-show: ## Read the newest run in depth (every call, every argument)
 	@PALETTE_BENCH_INPUTS=$${PALETTE_BENCH_INPUTS:-/nonexistent} \

@@ -55,6 +55,22 @@ def claude_cli() -> str | None:
     return shutil.which("claude")
 
 
+def _cli_label() -> str:
+    """`claude (Claude Code X.Y.Z)`, or a plain note when the CLI is absent."""
+    binary = claude_cli()
+    if not binary:
+        return "claude (model not reported; run collected by hand)"
+    try:
+        raw = subprocess.run(
+            [binary, "--version"], capture_output=True, text=True, timeout=30
+        ).stdout.strip()
+        # `claude --version` prints "2.1.228 (Claude Code)"; keep the number.
+        version = raw.split()[0] if raw else ""
+    except (OSError, subprocess.SubprocessError):
+        version = ""
+    return f"claude (Claude Code {version})" if version else "claude"
+
+
 def latest_run() -> Path:
     prepared = [p for p in RUNS.glob("*/claude") if p.is_dir()]
     if not prepared:
@@ -154,6 +170,7 @@ def _drive(selected, root: Path, binary: str) -> int:
         environment.setdefault("PALETTE_HOME", str(REPO_ROOT))
 
         transcript = []
+        started = time.time()
         messages = [(workspace / "utterance.txt").read_text(encoding="utf-8"), *case.replies]
         for index, message in enumerate(messages):
             command = [binary, "-p", message]
@@ -173,8 +190,15 @@ def _drive(selected, root: Path, binary: str) -> int:
                 print(f"  turn {index + 1} exited {done.returncode}: "
                       f"{done.stderr.strip()[:200]}")
                 break
+        # Wall clock for the case. The trace can only ever bound this from
+        # below — it starts at the first deck.py call, so everything the model
+        # spent deciding to make that call is invisible to it.
         (workspace / "transcript.json").write_text(
-            json.dumps(transcript, indent=2), encoding="utf-8"
+            json.dumps(
+                {"seconds": round(time.time() - started, 1), "turns": transcript},
+                indent=2,
+            ),
+            encoding="utf-8",
         )
     return 0
 
@@ -203,8 +227,36 @@ def _run_sheet(selected, root: Path) -> None:
     print(f"   python {Path(__file__).name} collect\n")
 
 
+def _case_seconds(workspace: Path, calls: list[dict]) -> tuple[float, str | None]:
+    """How long the case took, and how confident that number is.
+
+    `--auto` records the real wall clock. A case a person drove has no such
+    record, so this falls back to the span of the call trace — first `deck.py`
+    invocation to the end of the last. That is a **lower bound**: everything the
+    model spent before reaching for the first command is invisible to it, and on
+    these cases that is the majority of the thinking. Labelled, never silently
+    mixed with a measured figure.
+    """
+    transcript = workspace / "transcript.json"
+    if transcript.is_file():
+        try:
+            payload = json.loads(transcript.read_text(encoding="utf-8"))
+            if isinstance(payload, dict) and payload.get("seconds"):
+                return float(payload["seconds"]), "measured"
+        except (OSError, ValueError):
+            pass
+
+    stamps = [c.get("at") for c in calls if isinstance(c.get("at"), (int, float))]
+    if not stamps:
+        return 0.0, None
+    last = calls[-1]
+    span = max(stamps) + float(last.get("seconds") or 0) - min(stamps)
+    return round(span, 1), "trace-span"
+
+
 def collect(root: Path) -> int:
     results: list[CaseResult] = []
+    timings: dict[str, str] = {}
     by_name = {c.name: c for c in CASES}
 
     for workspace in sorted(p for p in root.iterdir() if p.is_dir()):
@@ -239,6 +291,9 @@ def collect(root: Path) -> int:
                 except ValueError:
                     continue
 
+        result.seconds, timing = _case_seconds(workspace, result.palette_calls)
+        timings[case.name] = timing
+
         judge(case, result)
         results.append(result)
 
@@ -247,6 +302,11 @@ def collect(root: Path) -> int:
 
     payload = {
         "host": "claude",
+        # Claude Code does not report which model answered, so this names the
+        # CLI instead of inventing a model id. The report says plainly that the
+        # model is unreported rather than printing a guess next to two hosts
+        # whose models are known exactly.
+        "model": _cli_label(),
         "cases": len(results),
         "passed": sum(1 for r in results if r.ok),
         "results": [
@@ -259,6 +319,8 @@ def collect(root: Path) -> int:
                 "pptx": str(r.pptx) if r.pptx else None,
                 "slides": r.slides,
                 "ibm_plex": r.has_plex,
+                "seconds": r.seconds or None,
+                "timing": timings.get(r.case.name),
                 "palette_calls": [
                     {"command": c.get("command"), "args": c.get("args"),
                      "seconds": c.get("seconds")}

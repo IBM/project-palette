@@ -44,21 +44,18 @@ class TestTheSkillIsLeftAlone:
             "one of the agents it is meant to measure:\n" + done.stdout
         )
 
-    def test_the_skill_has_no_uncommitted_changes(self) -> None:
-        """`skills/` dirty means this host edited the thing it exists to measure.
-
-        Only `skills/` — `benchmark/` is under active development by its owner
-        and is legitimately dirty, so its cleanliness proves nothing either way.
-        What covers the benchmark instead is the runtime check below, which
-        hashes it before and after a full run.
-        """
-        done = subprocess.run(
-            ["git", "status", "--porcelain", "--", "skills/"],
-            cwd=REPO_ROOT, capture_output=True, text=True,
-        )
-        assert not done.stdout.strip(), (
-            "the skill has uncommitted changes:\n" + done.stdout
-        )
+    # There was a third test here asserting `git status -- skills/` was clean.
+    # It was wrong, and it is worth saying why rather than just deleting it.
+    #
+    # It could not distinguish *who* changed the skill. The rule is that this
+    # host must not adapt the skill to itself; a blanket cleanliness check also
+    # fires when the skill's owner fixes something the benchmark found — which
+    # is the benchmark working, not a violation. It failed the first time that
+    # happened, on a guard added to `deck.py` after a traced CUGA failure.
+    #
+    # The rule it was proxying for is fully covered by the two tests that
+    # remain: nothing under `skills/` may name this host, and a complete run
+    # must leave every byte of it identical.
 
     def test_no_test_module_shares_a_basename_with_the_repo_suite(self) -> None:
         """Two `test_skill.py` files broke collection whenever both suites ran

@@ -192,6 +192,65 @@ def _sidecar(target: Path, suffix: str) -> Path:
     return target.parent / f".{target.name}.{suffix}"
 
 
+def _unindent(text: str) -> str:
+    """Undo indentation a host's code layout leaked into a pasted value.
+
+    Agents rarely type a command; they write a program that runs one, and the
+    user's pasted text becomes a literal inside it. A literal sits at the
+    program's indentation, so every line **except the first** picks that up —
+    the first is flush because it follows the opening quote on the same line.
+
+    Measured: a 485-character document arrived as 521, the difference being
+    exactly nine continuation lines × four spaces. The deck built from it was
+    grounded in mangled text and nobody could see why.
+
+    `textwrap.dedent` cannot help here, and that is the whole reason this
+    exists: it strips the *common* prefix, which is empty precisely because
+    line one is flush.
+
+    Deliberately narrow. It fires only on that exact signature — first line
+    unindented, every other non-blank line sharing an indent — so a document
+    that is legitimately indented throughout is left alone.
+    """
+    lines = text.split("\n")
+    if len(lines) < 3 or (lines[0][:1].isspace() if lines[0] else True):
+        return text
+
+    body = [line for line in lines[1:] if line.strip()]
+    if not body:
+        return text
+
+    common = min(len(line) - len(line.lstrip(" ")) for line in body)
+    if common == 0:
+        return text
+
+    return "\n".join(
+        [lines[0]] + [line[common:] if line.strip() else "" for line in lines[1:]]
+    )
+
+
+#: A request longer than this, spread over several lines, is a pasted document
+#: rather than something a person typed as an instruction.
+_PASTED_REQUEST_CHARS = 400
+_PASTED_REQUEST_LINES = 3
+
+#: Line count alone is enough past this, whatever the length.
+#:
+#: Size was the only test until a document slipped under it: 310 characters —
+#: comfortably below the limit — spread over **eighteen lines**, a title, an
+#: audience line and a preferences block pasted into `--request`. Short, and
+#: unmistakably a document. People type instructions; they do not type
+#: eighteen lines of one.
+_PASTED_REQUEST_LINES_ALONE = 8
+
+
+def _looks_like_pasted_material(request: str) -> bool:
+    newlines = request.count("\n")
+    if newlines >= _PASTED_REQUEST_LINES_ALONE:
+        return True
+    return len(request) > _PASTED_REQUEST_CHARS and newlines >= _PASTED_REQUEST_LINES
+
+
 def _detach(home: Path, argv: list[str], log: Path, exit_file: Path) -> subprocess.Popen:
     """Run palette.py in the background, recording its exit code when it ends.
 
@@ -330,9 +389,40 @@ def plan(args: argparse.Namespace) -> int:
     home = palette_home()
     out = Path(args.out).expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
-    argv = ["build-plan", args.request, "--out", str(out)]
-    if args.context:
-        argv += ["--context", args.context]
+
+    request = _unindent(args.request)
+    context = _unindent(args.context) if args.context else args.context
+
+    # The document in the wrong slot, and nothing in the right one.
+    #
+    # Measured: a user pasted "Turn these Q3 notes into an exec deck" followed
+    # by the notes. The agent sent the notes as --request, no --context, and
+    # dropped the instruction entirely — then built a deck that looked fine.
+    # Silent, because a request is allowed to be anything.
+    #
+    # Refused rather than warned: a warning beside a working build is a warning
+    # nobody reads, and the same run three months from now is unexplainable.
+    # The fix is always available — there is no request that cannot be split
+    # into an instruction and its material.
+    if _looks_like_pasted_material(request) and not context and not (args.source or []):
+        print(json.dumps({
+            "ok": False,
+            "error": (
+                f"--request is {len(request)} characters over "
+                f"{request.count(chr(10)) + 1} lines with no --context. That is "
+                f"pasted material in the slot meant for the user's instruction."
+            ),
+            "fix": (
+                "Put what the user asked for in --request (usually one line, "
+                "theirs verbatim) and the material they pasted in --context. "
+                "A file on disk works too: --source <path>."
+            ),
+        }))
+        return 2
+
+    argv = ["build-plan", request, "--out", str(out)]
+    if context:
+        argv += ["--context", context]
     for source in args.source or []:
         argv += ["--source", str(Path(source).expanduser().resolve())]
     if args.wait:

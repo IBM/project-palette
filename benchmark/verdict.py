@@ -140,10 +140,23 @@ def judge(case, result: CaseResult) -> None:  # noqa: ANN001 - see CaseResult.ca
             f"{polls} status polls — each is a model round trip, and the step "
             f"budget is finite. The commands should be holding, not spinning"
         )
+    # Grounded, by either supported route.
+    #
+    # `--context` passes the material inline; `--source` points at a file
+    # holding it. The skill documents both, and `deck.py`'s own guard names
+    # `--source` when it refuses a document in `--request` — so an agent that
+    # takes the file route is doing exactly what it was told.
+    #
+    # This checked `--context` alone until a run where three cases used
+    # `--source` and were all scored as having lost the grounding. The decks
+    # were correct; the judge was wrong, and it was wrong in the direction that
+    # punishes the better-behaved host.
     if case.context and not any(
-        c.get("args", {}).get("context") for c in result.palette_calls
+        c.get("args", {}).get("context") or c.get("args", {}).get("source")
+        for c in result.palette_calls
     ):
         result.failures.append(
-            "pasted material was never passed as --context; it was probably "
-            "retyped into the request, which loses the grounding"
+            "pasted material never reached the plan — neither --context nor "
+            "--source was used, so it was retyped or summarised into the "
+            "request, which loses the grounding"
         )
