@@ -26,6 +26,9 @@ class SlideSession:
     lint: list[str] = field(default_factory=list)
     building: bool = False
     progress: dict[str, Any] = field(default_factory=_idle)
+    # Brand token bundle from an uploaded template (BYO-template). Persists
+    # across builds so a re-build keeps the same skin; reset() leaves it intact.
+    template_bundle: dict[str, Any] | None = None
     # The FileHandler app.py installs at session creation, writing this
     # session's logs to root/session.log. Stashed so /clear can detach +
     # close it cleanly. Not part of the dataclass equality contract.

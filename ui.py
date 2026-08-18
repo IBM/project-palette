@@ -330,6 +330,8 @@ select{font-family:inherit;font-size:12px;padding:5px 8px;border-radius:7px;
   </div>
   <input type="file" id="planFile" accept=".md,.txt,.markdown" hidden
     onchange="onPlanFileChosen()">
+  <input type="file" id="templateFile" accept=".pptx,.potx" multiple hidden
+    onchange="onTemplateChosen()">
   <button class="btn ghost" onclick="loadPlanFromFile()"
     title="Load an existing plan .md file directly — skips the crafter">Load plan</button>
   <button class="btn ghost" onclick="newDeck()">New</button>
@@ -613,13 +615,14 @@ function addPlanCard(planText, sources) {
     '<label>Palette</label>' +
     '<select class="pal">' +
     // value = palette_family the LoRA expects; label = user-facing name
-    [['ibm_watsonx','IBM'], ['neutral','Neutral']]
+    [['ibm_watsonx','IBM'], ['neutral','Neutral'], ['custom','Upload template…']]
       .map(([v,l]) => '<option value="' + v + '">' + l + '</option>').join('') +
-    '</select><div style="flex:1"></div>' +
+    '</select> <span class="tpl-chip"></span><div style="flex:1"></div>' +
     '<button class="btn">Build deck</button></div>'
   card.querySelector('textarea').value = planText
   card.querySelector('.plan-body').innerHTML = renderPlanMd(planText)
   card.querySelector('.btn').onclick = () => buildDeck(card)
+  card.querySelector('.pal').onchange = (e) => onPalChange(card)
   thread().appendChild(card)
   scroll()
 }
@@ -664,6 +667,57 @@ function savePlanToFile(btn) {
   a.href = url; a.download = fname
   document.body.appendChild(a); a.click(); a.remove()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+// ---- Bring-your-own-template: upload deck(s) -> extract brand -> re-skin ----
+let pendingTplCard = null
+
+// Palette dropdown changed. Picking "Upload template…" (with none loaded yet)
+// opens the file picker.
+function onPalChange(card) {
+  const pal = card.querySelector('.pal')
+  if (pal.value === 'custom' && !card.dataset.tpl) {
+    pendingTplCard = card
+    const inp = $('templateFile')
+    inp.value = ''              // reset so re-choosing the same file still fires
+    inp.click()
+  }
+}
+
+// One or more .pptx/.potx chosen -> POST /template, show a chip with the
+// extracted summary. On cancel or failure, fall back to the IBM palette.
+async function onTemplateChosen() {
+  const inp = $('templateFile'); const card = pendingTplCard; pendingTplCard = null
+  if (!card) return
+  if (!inp.files.length) { card.querySelector('.pal').value = 'ibm_watsonx'; return }
+  const chip = card.querySelector('.tpl-chip')
+  chip.textContent = ' reading template…'
+  const fd = new FormData()
+  fd.append('thread_id', TID)
+  for (const f of inp.files) fd.append('files', f)
+  try {
+    const r = await fetch('/template', { method: 'POST', body: fd })
+    const d = await r.json()
+    if (!r.ok) throw new Error(d.error || r.statusText)
+    card.dataset.tpl = '1'
+    chip.innerHTML = '<span style="font-size:11px;color:var(--muted)"> '
+      + d.summary + '</span> <button type="button" title="Remove template" '
+      + 'onclick="clearTemplate(this)" style="border:none;background:none;'
+      + 'color:var(--muted);cursor:pointer;font-size:12px">✕</button>'
+  } catch (e) {
+    chip.textContent = ''
+    card.querySelector('.pal').value = 'ibm_watsonx'
+    alert('Could not read template: ' + e.message)
+  }
+}
+
+// ✕ on the chip: disarm the template and revert to the IBM palette.
+async function clearTemplate(btn) {
+  const card = btn.closest('.plan')
+  try { await fetch('/template/' + TID, { method: 'DELETE' }) } catch (e) {}
+  delete card.dataset.tpl
+  card.querySelector('.tpl-chip').innerHTML = ''
+  card.querySelector('.pal').value = 'ibm_watsonx'
 }
 
 async function buildDeck(card) {

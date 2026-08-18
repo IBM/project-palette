@@ -24,6 +24,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+import byo
 import config
 from intake import craft_plan
 from pipeline import generate_deck, retry_slide
@@ -198,6 +199,19 @@ async def build(req: BuildReq):
     if session.building:
         return JSONResponse({"error": "a build is already running"},
                             status_code=409)
+
+    # palette_family="custom" -> use the uploaded template. Build on a neutral
+    # base, then deterministically re-skin the output to the brand bundle.
+    use_template = req.palette_family == "custom"
+    if use_template and not session.template_bundle:
+        return JSONResponse(
+            {"error": "No template uploaded — pick a template file first."},
+            status_code=400)
+    # Build on the IBM base: the re-skin's colour-role map + font swap are
+    # defined against Carbon/Plex output, so the deck must be generated in that
+    # register for every colour and font to be caught and remapped.
+    build_family = "ibm_watsonx" if use_template else req.palette_family
+
     session.reset()
     session.building = True
     t0 = time.time()
@@ -207,12 +221,21 @@ async def build(req: BuildReq):
                             "current": current, "total": total}
 
     def _run() -> dict:
-        return generate_deck(
+        res = generate_deck(
             plan, session.out_dir,
             deck_id=session.session_id[:12],
-            palette_family=req.palette_family,
+            palette_family=build_family,
+            include_branding_assets=not use_template,   # strip IBM logo for BYO
             progress=_progress,
         )
+        if use_template:
+            _progress("applying your template", 0, 1)
+            nc, nf = byo.reskin_deck(session.out_dir, session.template_bundle)
+            log.info("re-skin: %d colours, %d fonts", nc, nf)
+            pptx, previews = _rerender(session.out_dir)
+            res["pptx"], res["previews"] = pptx, previews
+            res["deck"]["palette"] = session.template_bundle
+        return res
 
     config.apply_models(req.planner, req.designer_coder, req.critic)
     log.info("=" * 60)
@@ -247,6 +270,46 @@ async def build(req: BuildReq):
         "geometry": result.get("geometry", {}),
         "retries": result.get("retries", {}),
     }
+
+
+# --- Bring-your-own-template ------------------------------------------------
+
+@app.post("/template")
+async def template(thread_id: str = Form("default"),
+                   files: list[UploadFile] = File(default=[])):
+    """Extract a brand skin from one or more uploaded decks and arm it for the
+    next build (used when palette_family='custom')."""
+    _session_id_var.set(thread_id)
+    session = _session(thread_id)
+    tmpdir = session.root / "template_src"
+    tmpdir.mkdir(exist_ok=True)
+    paths: list[Path] = []
+    for f in files:
+        if not f.filename:
+            continue
+        dest = tmpdir / Path(f.filename).name
+        dest.write_bytes(await f.read())
+        paths.append(dest)
+    if not paths:
+        return JSONResponse({"error": "no template files"}, status_code=400)
+    try:
+        report = await asyncio.to_thread(byo.extract_template,
+                                         [str(p) for p in paths])
+    except Exception as exc:  # noqa: BLE001
+        log.exception("template extract failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    session.template_bundle = report["palette"]
+    log.info("template armed: %d deck(s) -> %s", len(paths), report["summary"])
+    return {"ok": True, "summary": report["summary"], "n_decks": report["n_decks"]}
+
+
+@app.delete("/template/{thread_id}")
+async def clear_template(thread_id: str):
+    """Disarm the uploaded template (the chip's ✕)."""
+    s = _registry.get(thread_id)
+    if s is not None:
+        s.template_bundle = None
+    return {"ok": True}
 
 
 # --- Stage 1 — intake ------------------------------------------------------
