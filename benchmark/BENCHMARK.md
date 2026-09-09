@@ -152,12 +152,32 @@ make bench-claude CUGA=$C CASES=core # writes the run sheet; you paste
 make bench-collect CUGA=$C           # …then harvest what Claude built
 
 make bench-compare                  # side by side, newest run per host
+make bench-report CUGA=$C           # one Markdown report across every host
 make bench-show FAILURES=1          # newest run, in depth
 make bench-clean                    # delete every recorded run
 ```
 
 Leave `CASES=` off for all 33. `CASES=core` is 5 and takes ~30 min per host;
 `CASES=corpus` is the 13 documents and takes ~2 h per host.
+
+**`TURN_TIMEOUT=` for the corpus.** Those documents run to 11KB and a plan over
+one legitimately takes longer than the default 1500s ceiling — a turn cut short
+while still working is recorded as a failure of the host rather than of the
+clock, which is a lie in the direction that flatters nothing:
+
+```bash
+make bench-react CUGA=$C CASES=corpus TURN_TIMEOUT=2700
+```
+
+The flag differs underneath — `run.py`'s `--timeout` *is* per turn, while the
+ReAct runner separates `--turn-timeout` from `--command-timeout` — so the make
+variable exists to hide that.
+
+**One host at a time is the safer default** when a run will span hours.
+`bench-all` is sequential and correct, but it doubles the window in which a
+sleeping machine or a dropped VPN takes the whole thing out. That is not
+hypothetical: a three-host attempt died to DNS partway through and lost every
+column.
 
 **`bench-all` is sequential, not parallel.** Both automated hosts render decks,
 and two builds competing for the machine measures contention rather than the
@@ -190,6 +210,40 @@ plain_request     pass  5sl   323s  pass  5sl   299s
 
 It prints the model each host ran and warns when they differ, because a table
 comparing scaffolds is only about scaffolds when the model is held fixed.
+
+`report.py` writes both of those into one Markdown file — scores, metrics,
+failures with their traces, and what the numbers are not entitled to say:
+
+```bash
+make bench-report CUGA=$C                                   # newest run per host
+$PY benchmark/report.py --run benchmark/runs/<timestamp> \
+    --out benchmark/reports/report_cuga.md                  # a named, single host
+```
+
+**Pass `--run` when you mean a particular run.** Left to default it takes the
+newest, and after a targeted re-run that is a three-case retest rather than
+your measurement — it will cheerfully report `3/3` for a sweep that scored
+30/33.
+
+### Keeping a result
+
+`benchmark/runs/` is gitignored *and* is what `bench-clean` deletes. It holds
+the only copy of a run's traces, and it has been wiped mid-investigation more
+than once.
+
+- **Reports** belong in `benchmark/reports/`, which is tracked. A run is
+  reproducible; a conclusion is worth keeping and diffing.
+- **Decks**, if you want them in one place rather than scattered across case
+  directories:
+
+  ```bash
+  RUN=$(ls -dt benchmark/runs/*/react | head -1)
+  mkdir -p benchmark/decks-react
+  for d in "$RUN"/*/output/*.pptx; do cp "$d" benchmark/decks-react/; done
+  ```
+
+  One `.pptx` per case, named after it. Expect one fewer than the case count:
+  `never_approves` correctly builds nothing.
 
 ### Claude Code
 

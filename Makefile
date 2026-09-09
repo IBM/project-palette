@@ -168,6 +168,15 @@ skill-test: ## Check the skill is self-consistent (no server, no network)
 BENCH_PY := $(CUGA)/.venv/bin/python
 CASES_ARG = $(if $(CASES),--cases $(CASES),)
 
+# Per-turn ceiling. The default suits the interaction cases; the corpus
+# documents are up to 11KB and legitimately need longer, and a turn cut short
+# while still working is recorded as a failure of the host rather than of the
+# clock. Note the flag differs per runner — run.py's --timeout *is* per turn,
+# while the ReAct runner separates --turn-timeout from --command-timeout.
+#   make bench-react CUGA=<path> TURN_TIMEOUT=2700
+REACT_TIMEOUT_ARG = $(if $(TURN_TIMEOUT),--turn-timeout $(TURN_TIMEOUT),)
+CUGA_TIMEOUT_ARG  = $(if $(TURN_TIMEOUT),--timeout $(TURN_TIMEOUT),)
+
 # One file for everything the benchmark needs. `~/.config/palette/env` is the
 # file `serve-init` already creates — mode 600, and the documented home for the
 # RITS key — so it is the single place. Override with PALETTE_ENV=<path>.
@@ -244,7 +253,7 @@ bench-check: bench-inputs bench-cuga-ready ## Verify every host without running 
 bench-cuga: bench-inputs bench-cuga-ready ## CUGA, via its agent SDK (make bench-cuga CUGA=<path> [CASES=core])
 	@$(LOAD_ENV) \
 	PALETTE_HOME=$(PWD) CUGA_HOME=$(CUGA) \
-	$(BENCH_PY) benchmark/run.py $(CASES_ARG)
+	$(BENCH_PY) benchmark/run.py $(CASES_ARG) $(CUGA_TIMEOUT_ARG)
 
 bench-react: bench-inputs bench-cuga-ready ## LangGraph ReAct on watsonx (make bench-react CUGA=<path> [CASES=core] [EAGER=1])
 	@# Needs CUGA only for an interpreter with langgraph + langchain-ibm and for
@@ -253,7 +262,7 @@ bench-react: bench-inputs bench-cuga-ready ## LangGraph ReAct on watsonx (make b
 	@$(LOAD_ENV) \
 	PALETTE_HOME=$(PWD) \
 	$(BENCH_PY) benchmark/react_run.py --env-file $(CUGA)/.env \
-	  $(CASES_ARG) $(if $(EAGER),--eager,)
+	  $(CASES_ARG) $(REACT_TIMEOUT_ARG) $(if $(EAGER),--eager,)
 
 bench-react-check: bench-inputs bench-cuga-ready ## Verify only the ReAct host (no skill install needed)
 	@# Separate from bench-check because that one also checks CUGA's installed
