@@ -22,10 +22,22 @@ minutes, so you don't want to build from an unapproved plan.
 
 ## Commands
 
-Run these from the Palette harness directory (where `palette.py` lives), with
-the harness environment configured (model access via `RITS_API_KEY`). Each
+Run these from the Palette harness directory (where `palette.py` lives). Each
 command prints its result to stdout and, on failure, prints `error: ...` and
 exits non-zero — relay that message to the user.
+
+Two environment variables have to be set, and a missing one is not obvious
+from the failure it causes:
+
+| Variable | Why |
+|---|---|
+| `RITS_API_KEY` | every model call. Without it, each command fails at the first one |
+| `PALETTE_HOME` | the checkout holding `palette.py`. Not needed here, where you are already in it, but the packaged skill (`skills/palette/`) shells in from elsewhere and cannot guess it |
+
+```bash
+export PALETTE_HOME=/path/to/project-palette
+export RITS_API_KEY=<key>
+```
 
 ### 1. Create a plan
 ```

@@ -1,0 +1,310 @@
+---
+name: palette
+description: >-
+  REQUIRED for every request that produces slides — "build me a deck", "make a
+  presentation", "turn these notes into slides", "5 slides on X", "put
+  something together explaining X" — and for every change to a deck already in
+  progress ("make it 3 slides", "more casual", "fix slide 2"). Do NOT write
+  .pptx files yourself with pptxgenjs, python-pptx, or OOXML: this skill is the
+  only supported way to produce one, and a hand-written deck is missing the
+  brand typography and layout the user expects. Produces a markdown plan the
+  user approves, then renders the .pptx.
+---
+
+# Palette — slide deck builder
+
+Palette turns a request (or pasted material) into a rendered slide deck in two
+reviewable steps:
+
+1. **Plan** — a markdown outline of the deck, which the user reviews and approves.
+2. **Deck** — a rendered PowerPoint `.pptx`, built from the approved plan.
+
+**Always let the user approve the plan before building the deck.** The plan is
+the cheap place to iterate; the deck build renders every slide and takes
+minutes, so you do not want to build from an unapproved plan.
+
+## You do not write the plan, and you do not write the deck
+
+`deck.py plan` writes the plan. `deck.py start` renders the deck. Your job is
+to run them, show the user what came back, and pass their reply through.
+
+**Never draft an outline yourself and present it as the plan.** It is not the
+plan: `build-deck` renders whatever is in `plan.md`, so a plan you wrote in
+chat is something the user approves and never receives. Observed — an agent
+loaded this skill, wrote a two-slide outline in prose, asked for approval, and
+never ran a single command.
+
+The same goes for the deck: no `pptxgenjs`, no `python-pptx`, no OOXML. If
+Palette cannot run, say so and stop. A hand-made deck is worse than none,
+because it looks like success.
+
+If a command fails, relay its error verbatim. Do not describe a failure you did
+not see — an agent that had run nothing reported a sandbox permission error it
+had invented, and the user believed the tool was broken.
+
+## Setup
+
+Every command goes through one script, `scripts/deck.py`, which lives beside
+this file. It finds the Palette checkout, runs `palette.py` from there, and
+puts the output where you asked — so you never change directory and never need
+a path into the checkout.
+
+Two environment variables have to be set — `$PALETTE_HOME` (the checkout
+containing `palette.py`) and `$RITS_API_KEY` (model access).
+
+**Never ask the user for them, and never check them first.** They are set in
+the environment you are already running in, and you cannot see it from here.
+Just run the command. If one really is missing, the first command fails
+immediately with the exact variable named — relay that message and stop.
+
+Asking costs the user a turn to answer a question about something that was
+already configured, and the answer would not help you set it anyway.
+
+Call the script by its path inside this skill folder. On most hosts that is:
+
+```bash
+python skills/palette/scripts/deck.py --help
+```
+
+**Do not run `palette.py` yourself**, and do not `cd` anywhere. `palette.py`
+lives in the checkout, not in this skill folder, and only runs with its own
+directory as the working directory — `deck.py` handles that.
+
+## Commands
+
+### 1. Create a plan
+
+```bash
+python skills/palette/scripts/deck.py plan --request "<the user's request>" --out plan.md
+# usually returns the finished plan; only poll plan-status if it says running
+```
+
+- Pass the user's request through **as-is** — do not reformat or restructure it.
+- **`plan` usually answers in one call.** It holds the call open for up to 90
+  seconds and normally returns `"done": true` with the plan in `text`. There is
+  nothing to poll — use what it gave you.
+- **If it returns `"state": "running"`** the plan was slower than that, and it
+  is still being written. Collect it with `plan-status --out <plan>` until
+  `"done": true`. This is the exception, not the routine.
+- If the user pasted **material for the deck** (notes, content, data, an
+  excerpt), ground the plan in it with `--context`:
+
+  ```bash
+  python skills/palette/scripts/deck.py plan --request "<request>" \
+      --context "<the pasted material>" --out plan.md
+  ```
+
+- Grounding files on disk instead: `--source <path>` (repeatable; `.md .txt
+  .pdf .docx .pptx`).
+- `--wait` blocks instead of detaching. It is there for a person at a terminal;
+  do not use it, because a step cut short mid-call tells you nothing and the
+  plan lands anyway with nobody looking at it.
+
+### 2. Revise a plan
+
+```bash
+python skills/palette/scripts/deck.py edit --instruction "<the change>" --plan plan.md
+# same shape as plan: usually one call, poll plan-status only if it says running
+```
+
+- Use for **any** change: slide count, tone, wording, content, adding or
+  removing a slide, changing one specific slide.
+- Pass the requested change through as-is.
+- Overwrites `--plan` unless you pass `--out`. Behaves exactly like `plan`:
+  usually the revised plan comes straight back, and `plan-status` is only for
+  the slow case.
+
+### 3. Build the deck
+
+**Three to ten minutes** — longer than a single step may run on some hosts, so
+this one does not block. Start it, then poll:
+
+```bash
+python skills/palette/scripts/deck.py start  --plan plan.md --out-dir ./deck
+python skills/palette/scripts/deck.py status --out-dir ./deck    # repeat until done
+```
+
+`start` returns immediately. `status` returns one JSON object; keep calling it
+until `"done": true`:
+
+```json
+{"state": "done", "done": true, "verified": true,
+ "pptx": "/abs/path/to/deck/deck.pptx", "pptx_bytes": 486213, "slide_previews": 9}
+```
+
+While it runs you get `"state": "running"` with `elapsed_seconds` and a `note`
+saying how that compares to a typical build. **Report that in the same turn as
+the next `status` call, never on its own** — a turn of prose with no command in
+it reads as a finished answer on some hosts and ends the run mid-build.
+
+There is usually no per-stage `progress` line: `build-deck` prints only when it
+finishes, so elapsed time is the honest signal. Do not wait for detail that is
+not coming.
+
+`status` also returns `elapsed_seconds`. **Past about fifteen minutes, say so
+rather than polling on in silence.** A build that cannot reach the models
+retries every stage before giving up — measured at 51 minutes to fail with
+nothing but connection timeouts in the log — and to a poller that is
+indistinguishable from a slow render. Tell the user it has run long, and offer
+the log:
+
+```bash
+tail -20 ./deck/build.log
+```
+
+`start` accepts `--palette-family <style>` for a specific visual style
+(default `ibm_watsonx`). Only pass it if the user asks.
+
+## Nothing here can be cut short
+
+Both slow commands run in their own process, so a host that caps a step can
+never kill the work mid-flight. What differs is how you collect them, because
+they are not the same shape of wait.
+
+**A plan is one model call.** `plan` holds the call open and normally hands you
+the finished plan — polling it would cost a round trip per poll, and those come
+out of the same budget the build needs later.
+
+**A build is minutes of rendering**, which no step limit will ever cover, so
+`start` returns at once and you poll `status` throughout.
+
+Either way, a step that gets cut short tells you *nothing* about whether the
+work succeeded, while the work carries on and finishes with nobody collecting
+it. Every failure this skill has had in the wild was some version of that.
+
+| You run | You collect with |
+|---|---|
+| `plan` / `edit` | usually nothing — poll `plan-status` only if it returned `running` |
+| `start` | `status --out-dir <dir>` |
+
+**A timeout, an error, or a killed step is never evidence of failure.** Poll
+again. The answer is on disk, not in the exit code.
+
+## Workflow
+
+The loop is **plan → confirm → [edit → confirm] × N → build**.
+
+### Step 0 — find out where you already are
+
+**Run this before anything else, on every turn:**
+
+```bash
+python skills/palette/scripts/deck.py find --root .
+```
+
+You do not reliably remember earlier turns, and the user does. Ask the
+filesystem instead. `find` reports every plan and every build beneath the
+directory in one call, so it answers both halves at once:
+
+- **A plan already written?** Do not draft another. Present that one, or edit
+  it if the user asked for a change. Re-planning silently discards the version
+  they read and costs them another minute.
+- **A build already running or done?** See the table below.
+
+For one specific build, `status --out-dir <dir>` gives the same verdict with
+the polling fields:
+
+```bash
+python skills/palette/scripts/deck.py status --out-dir ./deck
+```
+
+| `state` | What it means | What to do |
+|---|---|---|
+| `none` | nothing started here | continue to step 1 |
+| `running` | a build is underway | say so with `elapsed_seconds` — **do not start another, and do not ask about the plan again** |
+| `done` | the deck exists | give the user the `pptx` path and stop |
+| `error` | a build failed | relay `log_tail`; ask before rebuilding |
+
+**A user repeating themselves means you missed something on disk, not that
+they want it built again.** If someone says "yes" a second time, or asks where
+their deck is, run this before answering. Starting a fresh build because you
+forgot the last one costs them ten minutes and produces two decks.
+
+1. **User asks for a deck** → run **plan** with their request (add `--context`
+   if they pasted material), then poll `plan-status` until it is done.
+2. **Confirmation gate (required).** Present the plan and explicitly ask them to
+   confirm before anything is built:
+
+   > Here is the plan for your deck. Does this look right? Reply **yes** to
+   > build the deck, or tell me what you'd like to change.
+
+   **Never start a build until the user has confirmed this plan** — and never
+   ask for that confirmation twice. If step 0 said a build is `running` or
+   `done`, the gate is already behind you; report the build instead.
+3. **Read the reply.** It is one of four things, and only the first builds:
+
+   | They said | Do this |
+   |---|---|
+   | **Approval** — "yes", "looks good", "go ahead", "build it", "ship it", "perfect" | `start` the build, poll `status`, report the `.pptx` path |
+   | **A change** — "make it 3 slides", "add a slide on cost", "more casual", "drop slide 2", "use our Q3 numbers" | `edit --instruction "<their words, verbatim>"`, then **back to step 2** |
+   | **A question** — "why is there no agenda slide?", "what's on slide 4?" | answer it from the plan, then ask for approval again. Do not build, do not edit |
+   | **A different deck** — "actually, do one on Kubernetes instead" | that is a new request: `plan` again from scratch |
+
+4. Repeat until they approve, then build.
+
+**The three that trip agents up:**
+
+- **"Yes, but make it shorter" is a change, not an approval.** Any approval
+  carrying a condition means edit first, then ask again. Building on it gives
+  them the deck they just told you was wrong, and costs ten minutes.
+- **Pass their words through verbatim.** `--instruction "make it 3 slides and
+  more casual"` — not your summary of it. `edit-plan` is a model call that
+  reads the user's phrasing; paraphrasing loses what they actually asked for.
+  Same rule as `plan`.
+- **Never build straight after an edit.** A revised plan is an unapproved plan.
+  Present it and ask again, however small the change was.
+
+**If they paste material after a plan exists** — notes, figures, an excerpt —
+they are almost always saying "use this in the deck". Feed it to `edit` as the
+instruction. Start a new `plan --context` only if they are clearly asking for a
+different deck.
+
+## Reporting the result
+
+- **Give the absolute path** to the `.pptx`. A relative path names a working
+  directory the user may never have seen — on a sandboxed host it is a
+  per-conversation scratch directory, and "saved to `deck/deck.pptx`" sends
+  them looking in the wrong place. `deck.py status` returns the absolute path;
+  `build-deck --json` prints one too.
+- **Say how many slides.** It is the one number that says how much deck they got.
+- If the host shows workspace files to the user, mention they can open or
+  download it there without touching a terminal.
+
+## Never report a deck that does not exist
+
+A build that exits without writing a usable `.pptx` has failed, however
+reasonable its output looked. Rendering can fail after the plan is perfect.
+
+- **`deck.py status` computes `verified` by stat-ing the file** — it is true
+  only when `deck.pptx` exists and is large enough to be real. If you did not
+  see `"verified": true`, there is no deck.
+- **A `.pptx` appearing is not the build finishing.** `build-deck` renders,
+  lints the geometry, and re-renders to the same path until the layout
+  settles — often three passes. `status` waits for the process to exit before
+  it will say `done`, so wait for `done` rather than watching the directory.
+- Calling `build-deck` directly? Check before you speak:
+
+  ```bash
+  ls -l ./deck/deck.pptx
+  ```
+
+- A step that timed out tells you *nothing* about the outcome. Poll again
+  rather than assuming either way.
+- If it failed, relay the `error:` line or the `log_tail` from `status` — that
+  text is the actual reason, and paraphrasing it loses what the user needs.
+
+## Guidance
+
+- **Keep your job simple.** Pass the user's words straight through to
+  `build-plan` / `edit-plan`. The tools do the parsing, grounding and
+  formatting — do not pre-process the request yourself.
+- **The confirmation gate is mandatory.** Never jump from request to
+  `build-deck`, and never build a plan the user has not seen.
+- **Presentation context, not upload.** This host may not support file uploads.
+  If the user pastes material into the chat, pass it via `--context`; it is
+  used as source material, shaped into slides rather than copied verbatim.
+- **Do not hand-write slides.** If Palette cannot run, say so and stop — do not
+  fall back to `python-pptx` or `pptxgenjs`, because the result will not match
+  what the user expects from Palette.
+- **For programmatic parsing**, add `--json` to any `palette.py` command for a
+  `{"ok": true, ...}` envelope. `deck.py` always prints JSON.

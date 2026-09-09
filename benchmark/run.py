@@ -1,0 +1,493 @@
+#!/usr/bin/env python3
+"""Drive the palette skill through CUGA's agent SDK, one scripted conversation
+at a time, and report what Palette was actually asked to do.
+
+    python benchmark/run.py --cases core          # a handful
+    python benchmark/run.py                       # all of them
+    python benchmark/run.py --case edit_slide_count --keep
+
+Why an SDK harness rather than the web UI: a deck takes minutes and needs
+several turns, so exercising it by hand does not scale past a couple of tries,
+and the interesting failures are the ones that only show up across turns —
+building an unapproved plan, re-planning instead of editing, losing pasted
+context on the second pass. Those need a scripted user.
+
+Each case produces:
+
+  * the final `.pptx` (or an explicit note that none was produced)
+  * every `deck.py` call with its arguments and its output, from `$PALETTE_TRACE`
+  * the full conversation
+  * a verdict, from the filesystem rather than from what the agent said
+
+The verdict never trusts the agent. A deck exists if there is a `.pptx` of a
+plausible size carrying IBM Plex, and not otherwise.
+
+Requires: a CUGA checkout on `sys.path` (`--cuga`, or $CUGA_HOME), $PALETTE_HOME,
+$RITS_API_KEY, and the palette skill installed into the CUGA folder this points
+at. `--check` verifies all of that without running anything.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import shutil
+import sys
+import time
+import uuid
+from pathlib import Path
+
+BENCHMARK_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BENCHMARK_DIR.parent
+# Append, never insert: this directory going first shadows any stdlib module
+# that shares a filename here. A file called inspect.py did exactly that, and
+# dataclasses failed deep inside cases.py with a baffling AttributeError.
+sys.path.append(str(BENCHMARK_DIR))
+
+# The corpus lives at $PALETTE_BENCH_INPUTS and cases.py reads it on import, so
+# a missing variable surfaces here. Re-raised as SystemExit: the message is
+# already actionable, and a traceback through the import machinery buries it.
+try:
+    from cases import CASES, Case, by_tag  # noqa: E402
+except Exception as exc:  # noqa: BLE001 - corpus.CorpusNotConfigured, or a bad path
+    raise SystemExit(f"error: {exc}") from None
+# The shared verdict. Every host imports it from here — see verdict.py.
+from verdict import (  # noqa: E402
+    MIN_PPTX_BYTES,
+    CaseResult,
+    TurnRecord,
+    inspect_deck,
+    judge,
+    newest_deck,
+)
+
+#: A build is 3-10 minutes and a plan up to 3; a conversation that has not
+#: finished well past that is stuck rather than slow.
+DEFAULT_CASE_TIMEOUT = 1500
+
+
+# ---------------------------------------------------------------- environment
+
+
+def add_cuga_to_path(explicit: str | None) -> Path:
+    """Put a CUGA checkout on sys.path and return it."""
+    raw = explicit or os.environ.get("CUGA_HOME", "").strip()
+    if not raw:
+        raise SystemExit(
+            "error: set --cuga <path> or $CUGA_HOME to a cuga-agent checkout"
+        )
+    home = Path(raw).expanduser().resolve()
+    src = home / "src"
+    if not (src / "cuga" / "sdk.py").is_file():
+        raise SystemExit(f"error: {home} does not look like a cuga-agent checkout")
+    sys.path.insert(0, str(src))
+
+    # CUGA reads its credentials from a .env it finds relative to the *current*
+    # directory. This harness runs from Palette, and each case runs from its own
+    # workspace, so that search never lands on CUGA's file and every model call
+    # fails on a missing key. `ENV_FILE` is the supported override.
+    env_file = home / ".env"
+    if env_file.is_file() and not os.environ.get("ENV_FILE", "").strip():
+        os.environ["ENV_FILE"] = str(env_file)
+
+    # This harness lives in Palette but *runs* CUGA, so it needs CUGA's
+    # dependencies — dynaconf, langgraph, the model clients. Palette's venv has
+    # none of them, and the failure is an unhelpful ModuleNotFoundError several
+    # imports deep. Say so here instead.
+    try:
+        import cuga.config  # noqa: F401
+    except ModuleNotFoundError as exc:
+        interpreter = home / ".venv" / "bin" / "python"
+        raise SystemExit(
+            f"error: this interpreter cannot import CUGA ({exc.name!r} is missing).\n"
+            f"The harness drives CUGA, so run it with CUGA's interpreter:\n\n"
+            f"  {interpreter} {Path(__file__).resolve()} …\n"
+        ) from exc
+    return home
+
+
+def preflight(cuga_home: Path) -> list[str]:
+    """Everything that has to be true before a run means anything."""
+    problems: list[str] = []
+
+    palette_home = os.environ.get("PALETTE_HOME", "").strip()
+    if not palette_home:
+        problems.append("PALETTE_HOME is not set")
+    elif not (Path(palette_home) / "palette.py").is_file():
+        problems.append(f"PALETTE_HOME={palette_home} has no palette.py")
+
+    if not os.environ.get("RITS_API_KEY", "").strip():
+        problems.append("RITS_API_KEY is not set — every model call will fail")
+
+    skill = cuga_home / ".cuga" / "skills" / "palette" / "SKILL.md"
+    if not skill.is_file():
+        problems.append(
+            f"no palette skill at {skill.parent} — "
+            f"run `make skill-install CUGA={cuga_home}`"
+        )
+    else:
+        source = REPO_ROOT / "skills" / "palette"
+        installed = skill.parent
+        drifted = [
+            p.name
+            for p in source.rglob("*")
+            if p.is_file()
+            and "__pycache__" not in p.parts
+            and (installed / p.relative_to(source)).read_bytes() != p.read_bytes()
+            if (installed / p.relative_to(source)).is_file()
+        ]
+        if drifted:
+            problems.append(
+                f"the installed skill has drifted from this checkout ({', '.join(drifted)}) — "
+                f"reinstall before benchmarking, or you are measuring old instructions"
+            )
+
+    # Installed is not the same as *discoverable*. Discovery reads $CUGA_FOLDER,
+    # and when that is wrong the scan silently returns nothing: the model is
+    # never offered the skill, writes a deck by hand, and the run looks like a
+    # routing failure. That reading cost an hour, so check it directly.
+    os.environ["CUGA_FOLDER"] = str(cuga_home / ".cuga")
+    try:
+        from cuga.backend.skills.loader import discover_skills
+
+        found = [s.name for s in discover_skills(str(cuga_home / ".cuga"))]
+        if "palette" not in found:
+            problems.append(
+                f"CUGA cannot discover the palette skill under {cuga_home / '.cuga'} "
+                f"(found: {found or 'nothing'}) — the model would never be offered it"
+            )
+    except Exception as exc:  # noqa: BLE001 - report, do not crash the preflight
+        problems.append(f"skill discovery raised {type(exc).__name__}: {exc}")
+
+    return problems
+
+
+def configure_cuga(cuga_home: Path) -> None:
+    """The settings `demo_palette` applies, minus the web server."""
+    from cuga.config import settings
+
+    # Skill discovery reads $CUGA_FOLDER, *not* CugaAgent(cuga_folder=…) —
+    # that argument is for policies. Without this the scan runs against this
+    # harness's own directory, finds no skills, and the model is never offered
+    # one. It then does the reasonable thing and writes a deck by hand, which
+    # looks exactly like a routing failure and is not one.
+    os.environ["CUGA_FOLDER"] = str(cuga_home / ".cuga")
+
+    settings.skills.enabled = True
+    settings.advanced_features.enable_shell_tool = True
+    # A deck is minutes of polling, so the model narrates progress far more than
+    # a normal task; without this the first such message ends the run mid-build.
+    settings.advanced_features.cuga_lite_nl_auto_continue = True
+    settings.advanced_features.sandbox_execution_timeout = 120
+    settings.policy.enabled = False
+
+
+# ---------------------------------------------------------------- the sandbox
+
+
+#: macOS Seatbelt policy, written by CUGA's native sandbox executor.
+SANDBOX_POLICY = Path("/tmp/.cuga_sandbox.sb")
+
+
+def reset_sandbox_policy() -> None:
+    """Write a Seatbelt policy that permits writes to *this* case's workspace.
+
+    `sandbox_mode = "native"` confines writes to `/private/tmp` and to
+    `<cwd>/cuga_workspace`, where cwd is read once — the first time a policy is
+    needed — and then cached. This harness runs every case in one process and
+    chdirs between them, so the policy stays pinned to case 1 and cases 2..n
+    cannot write to their own workspace.
+
+    What that costs, measured: the agent hits "Operation not permitted", falls
+    back to /private/tmp because that subpath is always writable, and builds a
+    perfectly good deck where the judge does not look. The trace is denied for
+    the same reason, so the case is scored "no .pptx was produced · palette
+    calls: (none)" while the model reports success. Four of five core cases
+    scored that way, and the run said 1/5 when the real figure was unknown.
+
+    **Written, not deleted.** Deleting it and letting CUGA rebuild was the
+    obvious fix and it is wrong: `_ensure_policy` sets `self._policy_written`,
+    an *instance* attribute that shadows the class one, so a live executor never
+    notices the class-level reset. Deleting the file then leaves
+    `sandbox-exec -f <profile>` pointing at nothing and every command fails
+    instantly — which is worse than the stale policy it replaced, and is exactly
+    what happened when it was tried.
+
+    Generating it here sidesteps the caching entirely: whatever the executor
+    believes, what is on disk is correct for the current directory.
+
+    Best-effort — a CUGA on another sandbox mode has no policy to write, and
+    that is not an error.
+    """
+    try:
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.native.native_sandbox_executor import (
+            _build_policy,
+        )
+    except Exception:  # noqa: BLE001 - a different sandbox mode, or a refactor
+        return
+    # Reads os.getcwd() at call time, so this must run *after* the chdir.
+    SANDBOX_POLICY.write_text(_build_policy(), encoding="utf-8")
+
+
+# --------------------------------------------------------------------- running
+
+
+async def run_case(case: Case, cuga_home: Path, out_root: Path, timeout: int) -> CaseResult:
+    from cuga.sdk import CugaAgent
+
+    result = CaseResult(case=case)
+    workspace = out_root / "cuga" / case.name
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True)
+    result.workspace = workspace
+
+    # Save what went in, beside what comes out. A run you cannot reproduce the
+    # inputs of is a number without a question attached.
+    inputs = workspace / "input"
+    inputs.mkdir()
+    (inputs / "request.txt").write_text(case.request, encoding="utf-8")
+    if case.context:
+        (inputs / "context.md").write_text(case.context, encoding="utf-8")
+    (inputs / "replies.txt").write_text("\n".join(case.replies), encoding="utf-8")
+
+    # Inside the sandbox, writes are confined to <cwd>/cuga_workspace. A trace
+    # anywhere else is silently denied — which produced a run reporting a real
+    # 3-slide deck alongside "palette calls: (none)".
+    trace = workspace / "cuga_workspace" / "palette-calls.jsonl"
+    trace.parent.mkdir(parents=True, exist_ok=True)
+    os.environ["PALETTE_TRACE"] = str(trace)
+
+    # CUGA writes per-thread workspaces under the *current* directory, so run
+    # each case from its own, and the deck lands beside its trace.
+    previous_cwd = Path.cwd()
+    os.chdir(workspace)
+    reset_sandbox_policy()
+
+    started = time.time()
+    try:
+        agent = CugaAgent(cuga_folder=str(cuga_home / ".cuga"), auto_load_policies=False)
+        thread_id = f"bench-{case.name}-{uuid.uuid4().hex[:6]}"
+
+        opening = case.request
+        if case.context:
+            # How a user actually pastes: the ask, then the material. Splitting
+            # them into --request and --context is the agent's job.
+            opening = f"{case.request}\n\n{case.context}"
+
+        messages = [opening, *case.replies]
+        for index, message in enumerate(messages):
+            turn_started = time.time()
+            try:
+                reply = await asyncio.wait_for(
+                    agent.invoke(message=message, thread_id=thread_id, track_tool_calls=True),
+                    timeout=timeout,
+                )
+                record = TurnRecord(
+                    sent=message,
+                    answer=(reply.answer or "")[:4000],
+                    seconds=round(time.time() - turn_started, 1),
+                    error=reply.error,
+                )
+            except asyncio.TimeoutError:
+                record = TurnRecord(
+                    sent=message,
+                    answer="",
+                    seconds=round(time.time() - turn_started, 1),
+                    error=f"turn exceeded {timeout}s",
+                )
+                result.turns.append(record)
+                result.failures.append(f"turn {index + 1} timed out after {timeout}s")
+                break
+            except Exception as exc:  # noqa: BLE001 - one bad case must not end the run
+                record = TurnRecord(
+                    sent=message, answer="", seconds=round(time.time() - turn_started, 1),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                result.turns.append(record)
+                result.failures.append(f"turn {index + 1} raised {type(exc).__name__}: {exc}")
+                break
+            result.turns.append(record)
+    finally:
+        os.chdir(previous_cwd)
+        os.environ.pop("PALETTE_TRACE", None)
+
+    result.seconds = round(time.time() - started, 1)
+
+    if trace.is_file():
+        for line in trace.read_text(encoding="utf-8").splitlines():
+            try:
+                result.palette_calls.append(json.loads(line))
+            except ValueError:
+                continue
+
+    deck = newest_deck(workspace)
+    if deck is not None:
+        result.pptx = deck
+        result.slides, result.has_plex = inspect_deck(deck)
+        # A copy where a person will look, rather than several directories deep
+        # inside a per-thread workspace named after a UUID.
+        output = workspace / "output"
+        output.mkdir(exist_ok=True)
+        shutil.copy2(deck, output / f"{case.name}.pptx")
+        for preview in sorted(deck.parent.glob("*.png")):
+            shutil.copy2(preview, output / preview.name)
+        plan = next(iter(sorted(deck.parent.parent.glob("plan*.md"))), None)
+        if plan is not None:
+            shutil.copy2(plan, output / "plan.md")
+
+    judge(case, result)
+    return result
+
+
+# ------------------------------------------------------------------ reporting
+
+
+def configured_model() -> str:
+    """The model CUGA is actually set up to call, read from its settings.
+
+    This was a string literal — `"openai/gpt-oss-120b"` — until the day it
+    mattered. CUGA turned out to be loading `settings.watsonx.toml` rather than
+    RITS, so the report named the right model for the wrong reason and would
+    have gone on naming it after any config change. A report that states a model
+    it did not verify is worse than one that says it does not know.
+    """
+    try:
+        from cuga.config import settings
+
+        model = settings.get("agent", {}).get("chat", {}).get("model", {})
+        name = model.get("model_name") or model.get("platform")
+        if name:
+            return str(name)
+    except Exception:  # noqa: BLE001 - never fail a run over a label
+        pass
+    return "unknown (could not read CUGA's model settings)"
+
+
+def write_report(results: list[CaseResult], out_root: Path) -> Path:
+    payload = {
+        "host": "cuga",
+        "model": configured_model(),
+        "cases": len(results),
+        "passed": sum(1 for r in results if r.ok),
+        "results": [
+            {
+                "name": r.case.name,
+                "covers": r.case.covers,
+                "tags": list(r.case.tags),
+                "ok": r.ok,
+                "failures": r.failures,
+                "seconds": r.seconds,
+                "pptx": str(r.pptx) if r.pptx else None,
+                "slides": r.slides,
+                "ibm_plex": r.has_plex,
+                "palette_calls": [
+                    {
+                        "command": c.get("command"),
+                        "args": c.get("args"),
+                        "seconds": c.get("seconds"),
+                        "exit_code": c.get("exit_code"),
+                        "stdout": c.get("stdout", "")[:1500],
+                    }
+                    for c in r.palette_calls
+                ],
+                "turns": [
+                    {"sent": t.sent, "answer": t.answer, "seconds": t.seconds, "error": t.error}
+                    for t in r.turns
+                ],
+            }
+            for r in results
+        ],
+    }
+    report = out_root / "report.json"
+    report.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return report
+
+
+def print_summary(results: list[CaseResult], report: Path) -> None:
+    width = max(len(r.case.name) for r in results)
+    print()
+    print(f"{'case':<{width}}  {'verdict':<7} {'slides':>6} {'time':>7}  palette calls")
+    print("-" * (width + 48))
+    for r in results:
+        verdict = "pass" if r.ok else "FAIL"
+        calls = " ".join(r.commands()) or "(none)"
+        print(
+            f"{r.case.name:<{width}}  {verdict:<7} {r.slides or '-':>6} "
+            f"{r.seconds:>6.0f}s  {calls[:44]}"
+        )
+        for failure in r.failures:
+            print(f"{'':<{width}}  ↳ {failure}")
+
+    passed = sum(1 for r in results if r.ok)
+    decks = sum(1 for r in results if r.pptx)
+    print("-" * (width + 48))
+    print(f"{passed}/{len(results)} passed · {decks} decks built · report: {report}")
+
+
+# ---------------------------------------------------------------------- entry
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--cuga", help="cuga-agent checkout (default: $CUGA_HOME)")
+    parser.add_argument("--case", action="append", help="run only this case (repeatable)")
+    parser.add_argument("--cases", help="run only cases with this tag (core, edit, context, trap …)")
+    parser.add_argument("--out", default=str(REPO_ROOT / "benchmark" / "runs"),
+                        help="where decks, traces and the report land")
+    parser.add_argument("--timeout", type=int, default=DEFAULT_CASE_TIMEOUT,
+                        help=f"per-turn ceiling in seconds (default {DEFAULT_CASE_TIMEOUT})")
+    parser.add_argument("--check", action="store_true", help="verify the setup and exit")
+    parser.add_argument("--list", action="store_true", help="list the cases and exit")
+    args = parser.parse_args(argv)
+
+    if args.list:
+        for case in CASES:
+            print(f"{case.name:<26} {','.join(case.tags):<22} {case.covers}")
+        return 0
+
+    cuga_home = add_cuga_to_path(args.cuga)
+    problems = preflight(cuga_home)
+    if problems:
+        print("setup is not ready:")
+        for problem in problems:
+            print(f"  - {problem}")
+        return 1
+    if args.check:
+        print(f"ready: cuga={cuga_home}, palette={os.environ['PALETTE_HOME']}, "
+              f"skill installed and matching, RITS key present")
+        return 0
+
+    selected = list(CASES)
+    if args.cases:
+        selected = list(by_tag(args.cases))
+    if args.case:
+        wanted = set(args.case)
+        selected = [c for c in CASES if c.name in wanted]
+        missing = wanted - {c.name for c in selected}
+        if missing:
+            raise SystemExit(f"error: no such case(s): {', '.join(sorted(missing))}")
+    if not selected:
+        raise SystemExit("error: no cases selected")
+
+    configure_cuga(cuga_home)
+    out_root = Path(args.out).expanduser().resolve() / time.strftime("%Y%m%d-%H%M%S")
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    print(f"running {len(selected)} case(s) against {configured_model()} -> {out_root}")
+    results: list[CaseResult] = []
+    for index, case in enumerate(selected, 1):
+        print(f"[{index}/{len(selected)}] {case.name} … ", end="", flush=True)
+        result = asyncio.run(run_case(case, cuga_home, out_root, args.timeout))
+        print(f"{'pass' if result.ok else 'FAIL'} ({result.seconds:.0f}s)")
+        results.append(result)
+
+    report = write_report(results, out_root)
+    print_summary(results, report)
+    return 0 if all(r.ok for r in results) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
