@@ -325,7 +325,7 @@ in [`agents/README.md`](agents/README.md); as a benchmark host it is
 ### Other install routes
 
 ```bash
-make skill-package                 # dist/palette-skill.tar.gz (8KB)
+make skill-package                 # dist/palette-skill.tar.gz (16KB)
 ```
 
 A packaged skill is just the folder — `tar xzf palette-skill.tar.gz -C
@@ -471,6 +471,7 @@ tests/             Contract tests binding the skill to palette.py's CLI
 | [`CHEATSHEET.md`](CHEATSHEET.md) | something is broken and you want to reset it, or you want the test loop in six lines |
 | [`docs/skill-guide.html`](docs/skill-guide.html) | you are showing this to someone — a single page covering try it, test it, and what broke. `open docs/skill-guide.html`, or serve `docs/` anywhere |
 | [`benchmark/BENCHMARK.md`](benchmark/BENCHMARK.md) | you want to measure the skill: 33 scripted conversations over 13 real documents, on three hosts, with every Palette call traced. Start with `make bench-check`; the documents live at `$PALETTE_BENCH_INPUTS`, outside this repo |
+| [`docs/deploying-the-skill.md`](docs/deploying-the-skill.md) | you are putting the skill into a host that is **not** CUGA or Claude Code — what it must provide, the three install routes (including one for hosts with no skill mechanism), and what broke on each host so far |
 | [`agents/README.md`](agents/README.md) | you want a host this repo builds rather than one you install into — a LangGraph ReAct agent on watsonx, drivable from the command line and useful for isolating the model from the scaffold |
 | [`docs/skill-flow-in-cuga.md`](docs/skill-flow-in-cuga.md) | you want to know what actually happens between "build me a deck" and a `.pptx` — discovery, routing, sandbox, completion. Sequence diagram plus the code path |
 | [`SKILL.md`](SKILL.md) | you want the agent-facing instructions on their own |
