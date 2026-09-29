@@ -122,7 +122,8 @@ python skills/palette/scripts/deck.py find --root .
 
 JSON back means requirements 1, 5 and 7 hold. An error names which is missing.
 
-**2. Can it reach the models?** ~90 seconds, needs `$RITS_API_KEY`:
+**2. Can it reach the models?** ~10-90 seconds; needs model backends in
+`$PALETTE_HOME/.env` (CE fleet + watsonx, or `RITS_API_KEY`) — or `$PALETTE_URL`:
 
 ```bash
 python skills/palette/scripts/deck.py plan --request "3 slides on caching" --out /tmp/p.md

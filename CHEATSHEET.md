@@ -10,8 +10,10 @@ it, go to [`benchmark/BENCHMARK.md`](benchmark/BENCHMARK.md).
 Everything assumes you are in the Palette checkout, and that these are set:
 
 ```bash
-export PALETTE_HOME=$PWD
-export RITS_API_KEY=<key>          # IBM-internal; needs VPN
+export PALETTE_HOME=$PWD           # model backends come from ./.env (see .env.example):
+                                   #   CE fleet + watsonx, or RITS_API_KEY (IBM-internal; needs VPN)
+# or, to use a Palette server instead of this checkout:
+# export PALETTE_URL=https://<palette-server>
 ```
 
 ---
@@ -145,7 +147,8 @@ make -C $P verify CUGA=$C DECK=1
 ### Stage 3 — Palette builds a deck, no agent involved (~5 min)
 
 This is what separates "Palette is broken" from "the agent is confused".
-Needs `RITS_API_KEY` and the VPN.
+Needs working model backends in `.env` (`make serve-doctor` → `can_build: true`):
+the CE fleet + watsonx, or `RITS_API_KEY` and the VPN.
 
 ```bash
 cd $P && export PALETTE_HOME=$PWD
@@ -169,7 +172,7 @@ Then confirm it is genuinely a Palette deck — §2 below. If Stage 3 passes and
 make -C $P skill-install-claude
 ```
 
-In a session with `PALETTE_HOME` and `RITS_API_KEY` in the environment:
+In a session with `PALETTE_HOME` (or `PALETTE_URL`) in the environment:
 *"Build me a 5-slide deck about RAG."*
 
 ### Stage 5 — CUGA

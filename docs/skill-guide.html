@@ -288,13 +288,14 @@
 <section id="try">
   <h2>Try it</h2>
   <p class="lede">
-    Two environment variables and one install command. Then ask for a deck in plain English.
+    One environment variable and one install command. Then ask for a deck in plain English.
+    Step-by-step guide: <code>skills/README.md</code>.
   </p>
 
 <pre><span class="c"># once, in the Palette checkout</span>
 make install
-export PALETTE_HOME=$PWD
-export RITS_API_KEY=&lt;key&gt;        <span class="c"># IBM-internal; needs the VPN</span></pre>
+export PALETTE_HOME=$PWD           <span class="c"># model backends from ./.env: CE fleet + watsonx, or RITS_API_KEY</span>
+<span class="c"># …or skip the checkout and use a Palette server:  export PALETTE_URL=https://&lt;palette-server&gt;</span></pre>
 
   <h3>Claude Code</h3>
 <pre>make skill-install-claude        <span class="c"># -&gt; ~/.claude/skills/palette</span></pre>
@@ -304,8 +305,7 @@ export RITS_API_KEY=&lt;key&gt;        <span class="c"># IBM-internal; needs the
 <pre>make skill-install CUGA=&lt;cuga-checkout&gt;
 
 <span class="c"># in the CUGA checkout's .env — loaded at startup, survives a new terminal</span>
-PALETTE_HOME=/abs/path/to/project-palette
-RITS_API_KEY=&lt;key&gt;
+PALETTE_HOME=/abs/path/to/project-palette   <span class="c"># or PALETTE_URL=https://&lt;palette-server&gt;</span>
 
 cuga start demo_palette</pre>
 

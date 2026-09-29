@@ -413,3 +413,13 @@ class TestTheLogIsActuallyLive:
 
         assert "-u" in captured["args"], f"server started buffered: {captured['args']}"
         assert captured["env"].get("PYTHONUNBUFFERED") == "1"
+
+
+def test_every_cli_action_calls_a_function_that_exists() -> None:
+    """serve_cli.py dispatches to service.<name>; a rename on one side broke
+    `make serve-logs`, `serve-install` and `serve-uninstall` with AttributeError."""
+    import re
+    cli = (REPO_ROOT / "palette_skill" / "serve_cli.py").read_text()
+    called = set(re.findall(r"\bservice\.([a-z_]+)\(", cli))
+    missing = sorted(name for name in called if not callable(getattr(service, name, None)))
+    assert not missing, f"serve_cli calls service functions that do not exist: {missing}"

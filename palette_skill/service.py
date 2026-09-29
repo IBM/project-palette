@@ -643,6 +643,32 @@ def uninstall_launchd(cfg: ServiceConfig) -> dict[str, Any]:
     return {"uninstalled": False, "reason": "not installed"}
 
 
+# -- CLI verbs ---------------------------------------------------------------
+# serve_cli.py's actions, named for what a user asks for; the logic lives above.
+
+
+def tail_logs(cfg: ServiceConfig, lines: int = 50) -> int:
+    """`serve logs`: print the log tail (container logs in container mode)."""
+    print(read_logs(cfg, lines=lines))
+    return 0
+
+
+def restart(cfg: ServiceConfig, mode: Mode | None = None) -> dict[str, Any]:
+    """`serve restart`: stop whatever runs, then start and wait for health."""
+    stopped = stop(cfg)
+    return {"stopped": stopped["stopped"], **ensure(cfg, mode=mode)}
+
+
+def install_agent(cfg: ServiceConfig) -> dict[str, Any]:
+    """`serve install`: the launchd agent (starts at login, restarts on crash)."""
+    return install_launchd(cfg)
+
+
+def uninstall_agent(cfg: ServiceConfig) -> dict[str, Any]:
+    """`serve uninstall`: remove the launchd agent."""
+    return uninstall_launchd(cfg)
+
+
 # -- bootstrap -------------------------------------------------------------
 
 
