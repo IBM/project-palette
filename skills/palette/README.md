@@ -14,17 +14,10 @@ and **IBM Bob**; also CUGA and others supported by
 
 ---
 
-## Pick a mode
+## Install
 
-> **Branch:** the skill and these instructions live on the `palette_skill` branch until it's
-> merged into `main`. After that, the shorter `npx skills add IBM/project-palette …` and a plain
-> `git clone` (default branch) work too.
-
-New here? The step-by-step install guide is [`../README.md`](../README.md).
-
-
-The skill is a small folder (`SKILL.md` + `scripts/deck.py`) that drives
-Palette, which does the actual work. One variable decides where Palette runs:
+**Step-by-step guide: [skills/README.md](https://github.com/IBM/project-palette/blob/palette_skill/skills/README.md)** — install the skill, then
+connect it to Palette one of two ways. One variable decides which:
 
 | | **Option A — Local** (`PALETTE_HOME`) | **Option B — Remote** (`PALETTE_URL`) |
 |---|---|---|
@@ -33,72 +26,13 @@ Palette, which does the actual work. One variable decides where Palette runs:
 | Setup time | ~15 minutes | 1 minute |
 | Best for | developing Palette, or working offline from the server | using the skill |
 
-If both are set, `PALETTE_URL` (Option B) wins. Same commands, same results either way.
+If both are set, `PALETTE_URL` (Option B) wins. Same commands, same results
+either way. In remote mode decks build on the server and are downloaded into
+`./deck/`; the server keeps sessions in memory, so a restart mid-build fails
+that build (the skill says so) — start it again.
 
----
-
-## Option A — Local install
-
-### 1. Set up Palette (once per machine)
-
-```bash
-git clone -b palette_skill https://github.com/IBM/project-palette.git && cd project-palette
-brew install node poppler && brew install --cask libreoffice   # renderer + previews
-make install                                                    # Python + Node deps into .venv
-cp .env.example .env                                            # model settings — see below
-echo "export PALETTE_HOME=$PWD" >> ~/.zshrc                     # tell the skill where Palette is
-```
-
-In `.env`, fill in the **model backends** (ask a Palette maintainer for values):
-
-| Setting | For |
-|---|---|
-| `PALETTE_CE_BASE_URL`, `PALETTE_CE_API_KEY` | designer + coder: the palette model on the Code Engine GPU fleet |
-| `GPT_OSS_120B_PROVIDER=watsonx`, `WATSONX_APIKEY`, `WATSONX_PROJECT_ID` | planner + editor: gpt-oss-120b on watsonx.ai |
-| `RITS_API_KEY` | only if you use RITS instead (needs the IBM VPN) |
-
-Check it: `make serve-doctor` — every line should say `ok` and `can_build: true`.
-
-### 2. Add the skill
-
-```bash
-npx skills add https://github.com/IBM/project-palette/tree/palette_skill/skills/palette -g -a claude-code -a bob -y
-```
-
-That puts the skill in `~/.agents/skills/palette` and links it for Claude
-Code (`~/.claude/skills/palette`) and IBM Bob (`~/.bob/skills/palette`). Drop the `-a …` flags to pick agents interactively;
-drop `-g` to install into the current project only. From a checkout,
-`make skill-install-claude` does the same for Claude Code.
-
----
-
-## Option B — Remote install (2 steps)
-
-```bash
-echo 'export PALETTE_URL=https://palette.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud' >> ~/.zshrc
-npx skills add https://github.com/IBM/project-palette/tree/palette_skill/skills/palette -g -a claude-code -a bob -y
-```
-
-That's all — no clone, no Python/Node/LibreOffice, no model keys; the server
-has them. Open a **new** Claude Code or Bob session and
-[try it](#try-it). (The URL above is the shared instance; ask Praveen or Anu
-if it moves. Check it's up: `curl -s $PALETTE_URL/health`.)
-
-Decks build on the server and are downloaded into `./deck/` when done. The
-server holds sessions in memory, so a server restart mid-build fails that
-build (the skill says so) — just start it again.
-
----
-
-## Try it
-
-Open a **new** Claude Code or Bob session (so it picks up the variable and the
-skill) and ask:
-
-> Build me a 3-slide deck explaining prompt caching to backend engineers.
-
-The agent runs the skill, shows you a plan, and waits. Reply to approve or ask
-for changes; it then builds the deck (3–10 minutes) into `./deck/deck.pptx`.
+> **Branch:** until the `palette_skill` branch is merged into `main`, install from it:
+> `npx skills add https://github.com/IBM/project-palette/tree/palette_skill/skills/palette -g -a claude-code -a bob -y`
 
 ---
 
@@ -140,7 +74,14 @@ agent ──► skills/palette/scripts/  │                                    
   decides the models.
 - **Local:** `deck.py` runs Palette from `$PALETTE_HOME` with that checkout's
   `.env`, so the skill uses exactly the models the checkout is configured for.
-  Anything already exported in the agent's environment wins over `.env`.
+  Anything already exported in the agent's environment wins over `.env`. The
+  model settings there:
+
+  | Setting | For |
+  |---|---|
+  | `PALETTE_CE_BASE_URL`, `PALETTE_CE_API_KEY` | designer + coder: the palette model on the Code Engine GPU fleet |
+  | `GPT_OSS_120B_PROVIDER=watsonx`, `WATSONX_APIKEY`, `WATSONX_PROJECT_ID` | planner + editor: gpt-oss-120b on watsonx.ai |
+  | `RITS_API_KEY` | only if you use RITS instead (needs the IBM VPN) |
 - Slow steps detach: `plan` returns the plan (usually within 90s), `start`
   kicks off the build and `status` is polled — so hosts that cap how long one
   command may run can't kill a build half-way.
@@ -156,7 +97,7 @@ agent ──► skills/palette/scripts/  │                                    
 | `the Palette server no longer knows this build` (remote) | The server restarted mid-build — ask the agent to build again |
 | The agent writes slides itself instead of using the skill | The skill isn't installed where that agent looks — `npx skills list -g` |
 | Build runs past 15 minutes | Models unreachable — local: `tail -20 deck/build.log`, check `.env` and `make serve-doctor`; remote: the server's GPU fleet may be stopped |
-| `soffice` / `node` not found in the build log | Step 1's `brew install` line |
+| `soffice` / `node` not found in the build log (Option A) | The `brew install` line in the install guide's Option A |
 | Slide previews on a Mac show a serif fallback instead of IBM Plex | LibreOffice looks fonts up by family name, and IBM's macOS Plex install names weights differently (`IBM Plex Sans Medm`) from the Linux packages the deck targets. Only the local previews/PDF are affected; the `.pptx` still names IBM Plex. The Code Engine app and `make serve-start` (container) render with the right fonts |
 
 Update the skill: `npx skills update`. Remove it: `npx skills remove palette -g`.
