@@ -63,6 +63,29 @@ for changes; it then builds the deck (3–10 minutes) into `./deck/deck.pptx`.
 
 ---
 
+## What `PALETTE_HOME` points at
+
+The skill runs **whatever that checkout contains right now** — its code, on
+whichever branch is checked out, and its `.env`. Switch branches there and the
+agent's next deck uses the new branch.
+
+| Setup | `PALETTE_HOME` | Install the skill with |
+|---|---|---|
+| **Everyday use** (recommended) | a dedicated clone on `main`, e.g. `~/palette` — not your dev working copy, so switching branches there doesn't change what your agent runs | `npx skills add IBM/project-palette -g -a claude-code -a bob -y` (the skill from GitHub's `main`) |
+| **Developing Palette or the skill** | your working copy, on your branch | `npx skills add "$PALETTE_HOME" -g -a claude-code -a bob -y` — the skill from the **same** checkout, so the commands it calls exist there (`make skill-install-claude` does this for Claude Code) |
+
+Keep the two in step: the installed skill calls `palette.py` commands and
+flags, so a skill from one branch can break against a checkout on another.
+
+To update:
+
+```bash
+cd "$PALETTE_HOME" && git pull && make install    # Palette: code + dependencies
+npx skills update                                  # the skill (or re-run the add command)
+```
+
+`make verify` in the checkout checks that the installed copy (in `~/.claude/skills`) matches it.
+
 ## How it works
 
 ```
