@@ -47,9 +47,12 @@ CUGA's macOS sandbox confines writes to `<cwd>/cuga_workspace`. When the policy
 went stale the agent hit "Operation not permitted", fell back to `/private/tmp`,
 and built a perfectly good deck somewhere nobody was looking.
 
-**6. `$PALETTE_HOME` and `$RITS_API_KEY` in the environment the shell
-inherits.** Not in the skill folder — the skill is byte-identical on every
-machine, which is what lets a catalog verify it by hash.
+**6. `$PALETTE_HOME` in the environment the shell inherits.** Model settings
+come from `$PALETTE_HOME/.env`, which `deck.py` loads (CE fleet + watsonx, or
+`$RITS_API_KEY`); anything the shell already exports wins. Neither goes in the
+skill folder — the skill is byte-identical on every machine, which is what lets
+a catalog verify it by hash. GUI hosts (IBM Bob, VS Code) read `~/.zshrc` in
+their terminals, so export it there.
 
 **7. Python 3 on the path inside that shell.**
 
@@ -57,12 +60,21 @@ machine, which is what lets a catalog verify it by hash.
 
 ### The host has a skills folder
 
+If [`npx skills`](https://skills.sh) knows the host (`npx skills add --help`
+lists agents — Claude Code, IBM Bob, Cursor, Codex, Cline, …):
+
+```bash
+npx skills add IBM/project-palette -g -a <agent>     # e.g. -a bob
+```
+
+Otherwise copy the folder yourself:
+
 ```bash
 make skill-package                       # dist/palette-skill.tar.gz
 tar xzf dist/palette-skill.tar.gz -C <skills-root>/
 ```
 
-That is the whole install — the same shape `npx skills add` uses. The host is
+That is the whole install — the same shape `npx skills add` produces. The host is
 expected to read `SKILL.md`'s frontmatter (`name`, `description`) for routing
 and hand the body to the model when the skill applies.
 

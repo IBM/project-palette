@@ -49,13 +49,15 @@ this file. It finds the Palette checkout, runs `palette.py` from there, and
 puts the output where you asked — so you never change directory and never need
 a path into the checkout.
 
-Two environment variables have to be set — `$PALETTE_HOME` (the checkout
-containing `palette.py`) and `$RITS_API_KEY` (model access).
+`$PALETTE_HOME` (the checkout containing `palette.py`) has to be set. Model
+access comes from that checkout's `.env` — the palette model on its GPU
+fleet, gpt-oss-120b on watsonx, or `$RITS_API_KEY` — and `deck.py` loads it
+for you.
 
-**Never ask the user for them, and never check them first.** They are set in
-the environment you are already running in, and you cannot see it from here.
-Just run the command. If one really is missing, the first command fails
-immediately with the exact variable named — relay that message and stop.
+**Never ask the user for them, and never check them first.** These settings
+are in the environment you are already running in, and you cannot see them
+from here. Just run the command. If one really is missing, the first command
+fails immediately with the exact variable named — relay that message and stop.
 
 Asking costs the user a turn to answer a question about something that was
 already configured, and the answer would not help you set it anyway.
@@ -124,8 +126,17 @@ python skills/palette/scripts/deck.py start  --plan plan.md --out-dir ./deck
 python skills/palette/scripts/deck.py status --out-dir ./deck    # repeat until done
 ```
 
-`start` returns immediately. `status` returns one JSON object; keep calling it
-until `"done": true`:
+`start` returns immediately. `status` waits up to 60 seconds for the build to
+finish, then returns one JSON object; keep calling it until `"done": true`.
+
+**If your shell allows a command to run for ten minutes** (Claude Code does),
+wait for the whole build in one call instead of ending your turn mid-build:
+
+```bash
+python skills/palette/scripts/deck.py status --out-dir ./deck --hold-seconds 540
+```
+
+Either way, stay in the same turn until `status` says done:
 
 ```json
 {"state": "done", "done": true, "verified": true,

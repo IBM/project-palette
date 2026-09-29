@@ -171,7 +171,7 @@ plan = edit_plan(plan, "Make it 3 slides and use a casual tone")
 result = build_deck(plan, out_dir="./my_deck")   # {"deck", "pptx", "previews", ...}
 ```
 
-For agent / skill integration, `SKILL.md` documents the commands and the
+For agent / skill integration, [`docs/cli.md`](docs/cli.md) documents the commands and the
 confirm-before-build workflow.
 
 ---
@@ -298,23 +298,19 @@ skills/palette/
 
 ### Try it — start here
 
-Two environment variables and one install command, then ask for a deck in
-plain English. **This section is the right pointer for anyone trying the
-skill for the first time**, on either host.
+**Full, short guide: [`skills/palette/README.md`](skills/palette/README.md)** —
+the page to send anyone trying the skill for the first time. In brief:
 
 ```bash
-make install                       # once, in this checkout
-export PALETTE_HOME=$PWD           # the checkout holding palette.py
-export RITS_API_KEY=<key>          # every model call; needs the VPN
+make install                       # once, in this checkout (needs node, poppler, libreoffice)
+cp .env.example .env               # model backends: CE fleet + watsonx, or RITS_API_KEY
+export PALETTE_HOME=$PWD           # the checkout holding palette.py (put it in ~/.zshrc)
+npx skills add IBM/project-palette -g -a claude-code -a bob -y   # Claude Code + IBM Bob
 ```
 
-**Claude Code**
-
-```bash
-make skill-install-claude          # -> ~/.claude/skills/palette
-```
-
-Then, in any Claude Code session: *"Build me a 5-slide deck about RAG."*
+Then, in a new Claude Code or Bob session: *"Build me a 3-slide deck about RAG."*
+The skill loads `$PALETTE_HOME/.env` itself, so the agent needs only
+`PALETTE_HOME`. `make skill-install-claude` installs from the checkout instead.
 
 **CUGA**
 
@@ -322,9 +318,9 @@ Then, in any Claude Code session: *"Build me a 5-slide deck about RAG."*
 make skill-install CUGA=<cuga-checkout>
 ```
 
-Then in the CUGA checkout, put `PALETTE_HOME` and `RITS_API_KEY` in its `.env`
-(it is loaded at startup, so it survives a new terminal) and run
-`cuga start demo_palette`.
+Then put `PALETTE_HOME` in the CUGA checkout's `.env` (it is loaded at
+startup, so it survives a new terminal) and run `cuga start demo_palette`.
+Model settings come from Palette's own `.env`; `RITS_API_KEY` only if you use RITS.
 
 Either way you get a **plan first, and a question** — approving it is a second
 turn — then a rendered `.pptx`. If something looks wrong, the reset and
@@ -366,9 +362,9 @@ palette` fetches these exact files.
 | Variable | Why |
 |---|---|
 | `PALETTE_HOME` | the checkout holding `palette.py`; the skill cannot guess it |
-| `RITS_API_KEY` | every model call. A sandbox only sees what its parent exports |
+| model settings | read by `deck.py` from `$PALETTE_HOME/.env` — the CE fleet (`PALETTE_CE_*`) and watsonx (`GPT_OSS_120B_PROVIDER`, `WATSONX_*`), or `RITS_API_KEY`. Anything the agent's environment already exports wins |
 
-Both live in the **environment**, never in the skill folder. Where Palette sits
+Neither lives in the skill folder. Where Palette sits
 is a per-machine fact, like `$JAVA_HOME`; the skill itself is byte-identical on
 every machine, which is what lets the catalog verify it by hash and what keeps
 "one copy, owned by Palette" true. A test enforces it.
@@ -502,7 +498,7 @@ tests/             Contract tests binding the skill to palette.py's CLI
 | [`docs/deploying-the-skill.md`](docs/deploying-the-skill.md) | you are putting the skill into a host that is **not** CUGA or Claude Code — what it must provide, the three install routes (including one for hosts with no skill mechanism), and what broke on each host so far |
 | [`agents/README.md`](agents/README.md) | you want a host this repo builds rather than one you install into — a LangGraph ReAct agent on watsonx, drivable from the command line and useful for isolating the model from the scaffold |
 | [`docs/skill-flow-in-cuga.md`](docs/skill-flow-in-cuga.md) | you want to know what actually happens between "build me a deck" and a `.pptx` — discovery, routing, sandbox, completion. Sequence diagram plus the code path |
-| [`SKILL.md`](SKILL.md) | you want the agent-facing instructions on their own |
+| [`docs/cli.md`](docs/cli.md) | you want the `palette.py` commands at a terminal (agents use `skills/palette`) |
 | [`skills/palette/SKILL.md`](skills/palette/SKILL.md) | you are looking at what actually ships to a host, including the long-build path |
 | [`skills/palette/scripts/deck.py`](skills/palette/scripts/deck.py) | you need to know how a build survives a step limit |
 | [`benchmark/verdict.py`](benchmark/verdict.py) | you want to know exactly what counts as a pass — one `judge()`, shared by every host, reading the filesystem rather than the transcript |

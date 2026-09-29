@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 DOCS = [
     REPO_ROOT / "README.md",
-    REPO_ROOT / "SKILL.md",
+    REPO_ROOT / "docs" / "cli.md",
     REPO_ROOT / "CHEATSHEET.md",
     REPO_ROOT / "skills" / "palette" / "SKILL.md",
     # The benchmark docs are under the same guard as the rest: they name a lot
@@ -171,10 +171,10 @@ def test_every_doc_names_the_variables_it_needs(doc: Path) -> None:
         )
 
 
-def test_the_two_skill_files_agree_on_capability() -> None:
-    """`SKILL.md` at the root and `skills/palette/SKILL.md` serve different readers.
+def test_the_cli_doc_and_the_skill_agree_on_capability() -> None:
+    """`docs/cli.md` and `skills/palette/SKILL.md` serve different readers.
 
-    The root file documents `palette.py` directly — the right thing for a
+    The CLI doc documents `palette.py` directly — the right thing for a
     person at a terminal. The packaged one documents `deck.py`, which fronts it
     so an agent never has to hold "which directory does this run from" in its
     head; one that tried ran `skills/palette/palette.py` and failed.
@@ -182,15 +182,28 @@ def test_the_two_skill_files_agree_on_capability() -> None:
     So they differ in commands by design. What they must not differ on is what
     Palette can *do*, or a reader learns a smaller Palette than exists.
     """
-    root = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8").lower()
+    root = (REPO_ROOT / "docs" / "cli.md").read_text(encoding="utf-8").lower()
     shipped = (REPO_ROOT / "skills" / "palette" / "SKILL.md").read_text(encoding="utf-8").lower()
 
     for capability in ("plan", "edit", "build", "--context"):
-        assert capability in root, f"root SKILL.md never mentions {capability!r}"
+        assert capability in root, f"docs/cli.md never mentions {capability!r}"
         assert capability in shipped, f"shipped SKILL.md never mentions {capability!r}"
 
-    for text, name in ((root, "SKILL.md"), (shipped, "skills/palette/SKILL.md")):
+    for text, name in ((root, "docs/cli.md"), (shipped, "skills/palette/SKILL.md")):
         assert "confirm" in text, f"{name} drops the confirmation gate"
+
+
+def test_there_is_exactly_one_skill_in_the_repo() -> None:
+    """`npx skills add IBM/project-palette` must find `skills/palette`.
+
+    The skills CLI stops at a root `SKILL.md` and installs the whole repo as
+    that skill, so a second SKILL.md anywhere shallower (or beside it) hides
+    or duplicates the real one. That happened: a root SKILL.md shadowed it.
+    """
+    found = sorted(p.relative_to(REPO_ROOT).as_posix() for p in REPO_ROOT.rglob("SKILL.md")
+                   if not any(part in {".git", "node_modules", ".venv", "workspace", "dist"}
+                              for part in p.parts))
+    assert found == ["skills/palette/SKILL.md"], found
 
 
 def test_the_shipped_skill_does_not_send_the_agent_to_palette_py() -> None:

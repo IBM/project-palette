@@ -161,6 +161,39 @@ def _alive(pid: int) -> bool | None:
     return "palette.py" in listing.stdout
 
 
+def palette_env(home: Path) -> dict[str, str]:
+    """The environment palette.py runs with: ours, plus the checkout's .env.
+
+    Model settings (which backend serves each role, and its keys) live in
+    $PALETTE_HOME/.env, the same file the web app and the local service read.
+    Loading it here means installing the skill needs only $PALETTE_HOME, and
+    the skill always uses the backends that checkout is configured for. A
+    variable already in the agent's environment wins over the file.
+    """
+    env = dict(os.environ)
+    dotenv = home / ".env"
+    try:
+        lines = dotenv.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return env
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        key, sep, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or not key.replace("_", "").isalnum():
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if value.startswith("~/"):
+            value = str(Path.home() / value[2:])
+        env.setdefault(key, value)
+    return env
+
+
 def _run_palette(home: Path, argv: list[str]) -> subprocess.CompletedProcess:
     """Run palette.py from the checkout, whatever the caller's cwd is.
 
@@ -173,7 +206,7 @@ def _run_palette(home: Path, argv: list[str]) -> subprocess.CompletedProcess:
     """
     return subprocess.run(
         [interpreter(home), "-u", "palette.py", *argv],
-        cwd=str(home), capture_output=True, text=True,
+        cwd=str(home), capture_output=True, text=True, env=palette_env(home),
     )
 
 
@@ -265,6 +298,7 @@ def _detach(home: Path, argv: list[str], log: Path, exit_file: Path) -> subproce
         return subprocess.Popen(
             ["/bin/sh", "-c", f"{quoted}; echo $? > {shlex.quote(str(exit_file))}"],
             cwd=str(home),            # palette.py imports config/pipeline from here
+            env=palette_env(home),    # + the checkout's .env (model backends)
             stdout=handle,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
