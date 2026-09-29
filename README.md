@@ -307,7 +307,7 @@ variable:
 
 ```bash
 export PALETTE_URL=https://palette.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud
-npx skills add IBM/project-palette -g -a claude-code -a bob -y
+npx skills add https://github.com/IBM/project-palette/tree/palette_skill/skills/palette -g -a claude-code -a bob -y
 ```
 
 **Local — Palette on this machine** (for developing Palette, or without the server):
@@ -316,7 +316,7 @@ npx skills add IBM/project-palette -g -a claude-code -a bob -y
 make install                       # once, in this checkout (needs node, poppler, libreoffice)
 cp .env.example .env               # model backends: CE fleet + watsonx, or RITS_API_KEY
 export PALETTE_HOME=$PWD           # the checkout holding palette.py (put it in ~/.zshrc)
-npx skills add IBM/project-palette -g -a claude-code -a bob -y   # Claude Code + IBM Bob
+npx skills add https://github.com/IBM/project-palette/tree/palette_skill/skills/palette -g -a claude-code -a bob -y   # Claude Code + IBM Bob
 ```
 
 Then, in a new Claude Code or Bob session: *"Build me a 3-slide deck about RAG."*

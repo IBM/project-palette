@@ -64,7 +64,8 @@ If [`npx skills`](https://skills.sh) knows the host (`npx skills add --help`
 lists agents — Claude Code, IBM Bob, Cursor, Codex, Cline, …):
 
 ```bash
-npx skills add IBM/project-palette -g -a <agent>     # e.g. -a bob
+npx skills add https://github.com/IBM/project-palette/tree/palette_skill/skills/palette -g -a <agent>     # e.g. -a bob
+# (`palette_skill` branch until merged; then: npx skills add IBM/project-palette -g -a <agent>)
 ```
 
 Otherwise copy the folder yourself:

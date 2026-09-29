@@ -12,8 +12,12 @@ This page gets you from zero to your first deck. Details and troubleshooting:
 ## Step 1 — Install the skill
 
 ```bash
-npx skills add IBM/project-palette -g -a claude-code -a bob -y
+npx skills add https://github.com/IBM/project-palette/tree/palette_skill/skills/palette -g -a claude-code -a bob -y
 ```
+
+> **Branch:** the skill and these instructions live on the `palette_skill` branch until it's
+> merged into `main`. After that, the shorter `npx skills add IBM/project-palette …` and a plain
+> `git clone` (default branch) work too.
 
 This needs Node.js (`brew install node` if `npx` isn't found). It puts the
 skill in one place and links it to your agents:
@@ -28,7 +32,7 @@ skill in one place and links it to your agents:
 <summary>Prefer to copy it by hand?</summary>
 
 ```bash
-git clone https://github.com/IBM/project-palette.git
+git clone -b palette_skill https://github.com/IBM/project-palette.git
 mkdir -p ~/.agents/skills ~/.claude/skills
 cp -R project-palette/skills/palette ~/.agents/skills/palette
 ln -sfn ../../.agents/skills/palette ~/.claude/skills/palette    # Claude Code
@@ -53,7 +57,7 @@ Palette runs with **one** variable:
 ### Option A — Local
 
 ```bash
-git clone https://github.com/IBM/project-palette.git ~/palette && cd ~/palette
+git clone -b palette_skill https://github.com/IBM/project-palette.git ~/palette && cd ~/palette
 brew install node poppler && brew install --cask libreoffice
 make install
 cp .env.example .env          # then fill in the model settings (ask Praveen or Anu)

@@ -16,6 +16,10 @@ and **IBM Bob**; also CUGA and others supported by
 
 ## Pick a mode
 
+> **Branch:** the skill and these instructions live on the `palette_skill` branch until it's
+> merged into `main`. After that, the shorter `npx skills add IBM/project-palette …` and a plain
+> `git clone` (default branch) work too.
+
 New here? The step-by-step install guide is [`../README.md`](../README.md).
 
 
@@ -38,7 +42,7 @@ If both are set, `PALETTE_URL` (Option B) wins. Same commands, same results eith
 ### 1. Set up Palette (once per machine)
 
 ```bash
-git clone https://github.com/IBM/project-palette.git && cd project-palette
+git clone -b palette_skill https://github.com/IBM/project-palette.git && cd project-palette
 brew install node poppler && brew install --cask libreoffice   # renderer + previews
 make install                                                    # Python + Node deps into .venv
 cp .env.example .env                                            # model settings — see below
@@ -58,7 +62,7 @@ Check it: `make serve-doctor` — every line should say `ok` and `can_build: tru
 ### 2. Add the skill
 
 ```bash
-npx skills add IBM/project-palette -g -a claude-code -a bob -y
+npx skills add https://github.com/IBM/project-palette/tree/palette_skill/skills/palette -g -a claude-code -a bob -y
 ```
 
 That puts the skill in `~/.agents/skills/palette` and links it for Claude
@@ -72,7 +76,7 @@ drop `-g` to install into the current project only. From a checkout,
 
 ```bash
 echo 'export PALETTE_URL=https://palette.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud' >> ~/.zshrc
-npx skills add IBM/project-palette -g -a claude-code -a bob -y
+npx skills add https://github.com/IBM/project-palette/tree/palette_skill/skills/palette -g -a claude-code -a bob -y
 ```
 
 That's all — no clone, no Python/Node/LibreOffice, no model keys; the server
@@ -106,7 +110,7 @@ agent's next deck uses the new branch.
 
 | Setup | `PALETTE_HOME` | Install the skill with |
 |---|---|---|
-| **Everyday use** (recommended) | a dedicated clone on `main`, e.g. `~/palette` — not your dev working copy, so switching branches there doesn't change what your agent runs | `npx skills add IBM/project-palette -g -a claude-code -a bob -y` (the skill from GitHub's `main`) |
+| **Everyday use** (recommended) | a dedicated clone of the release branch (today `palette_skill`, `main` once merged), e.g. `~/palette` — not your dev working copy, so switching branches there doesn't change what your agent runs | the skill from the same branch on GitHub: `npx skills add https://github.com/IBM/project-palette/tree/palette_skill/skills/palette -g -a claude-code -a bob -y` |
 | **Developing Palette or the skill** | your working copy, on your branch | `npx skills add "$PALETTE_HOME" -g -a claude-code -a bob -y` — the skill from the **same** checkout, so the commands it calls exist there (`make skill-install-claude` does this for Claude Code) |
 
 Keep the two in step: the installed skill calls `palette.py` commands and
