@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 import config
 from intake import craft_plan
+from intake import edit_plan as intake_edit_plan
 from pipeline import generate_deck, retry_slide
 from refine import _rerender, apply_nl_edit
 from session import SlideSession
@@ -455,6 +456,56 @@ async def draft_result(thread_id: str):
     if s.last_plan is not None:
         return {"stage": "done", "plan": s.last_plan, "error": None}
     return {"stage": "running" if s.drafting else "idle", "plan": None, "error": None}
+
+
+class EditPlanReq(BaseModel):
+    plan: str
+    instruction: str
+    thread_id: str = "default"
+    planner: str = "gpt-oss-120b"
+
+
+@app.post("/edit_plan_async")
+async def edit_plan_async(req: EditPlanReq):
+    """Revise a plan in the background; collect it from /draft_result.
+
+    The HTTP form of `palette.py edit-plan` (same `intake.edit_plan`), used by
+    the skill's remote mode. It records its result exactly where a draft does
+    — `last_plan` / `last_draft_error` — so one poll endpoint serves both.
+    """
+    _session_id_var.set(req.thread_id)
+    if not req.plan.strip() or not req.instruction.strip():
+        return JSONResponse({"error": "plan and instruction are required"}, status_code=400)
+    session = _session(req.thread_id)
+    if session.drafting:
+        return JSONResponse({"error": "a draft is already running"}, status_code=409)
+    session.drafting = True
+    session.last_plan = None
+    session.last_draft_error = None
+
+    async def _task() -> None:
+        _session_id_var.set(req.thread_id)
+        config.apply_models(planner=req.planner)
+        session.progress = {"stage": "draft", "message": "revising plan",
+                            "current": 0, "total": 0}
+        try:
+            plan = await asyncio.to_thread(intake_edit_plan, req.plan, req.instruction)
+        # Nothing may escape a background task (see build_async).
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 — recorded on the session
+            log.exception("edit_plan failed")
+            session.drafting = False
+            session.last_draft_error = str(exc)
+            session.progress = {"stage": "error", "message": str(exc),
+                                "current": 0, "total": 0}
+            return
+        session.drafting = False
+        session.last_plan = plan
+        session.progress = {"stage": "draft_done", "message": "plan ready",
+                            "current": 0, "total": 0}
+
+    asyncio.create_task(_task())
+    log.info("edit_plan_async thread=%s accepted", req.thread_id)
+    return {"started": True, "thread_id": req.thread_id}
 
 
 # --- Stage 3 — refine ------------------------------------------------------

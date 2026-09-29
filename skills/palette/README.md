@@ -14,11 +14,26 @@ and **IBM Bob**; also CUGA and others supported by
 
 ---
 
-## Install
+## Pick a mode
 
-The skill is a small folder (`SKILL.md` + `scripts/deck.py`). It drives a
-**Palette checkout on the same machine**, which does the actual work — so you
-set up Palette once, then add the skill.
+New here? The step-by-step install guide is [`../README.md`](../README.md).
+
+
+The skill is a small folder (`SKILL.md` + `scripts/deck.py`) that drives
+Palette, which does the actual work. One variable decides where Palette runs:
+
+| | **Option A — Local** (`PALETTE_HOME`) | **Option B — Remote** (`PALETTE_URL`) |
+|---|---|---|
+| Palette runs on | your machine (a checkout) | a shared Palette server |
+| You install | Palette + Node + LibreOffice, then the skill | the skill, nothing else |
+| Setup time | ~15 minutes | 1 minute |
+| Best for | developing Palette, or working offline from the server | using the skill |
+
+If both are set, `PALETTE_URL` (Option B) wins. Same commands, same results either way.
+
+---
+
+## Option A — Local install
 
 ### 1. Set up Palette (once per machine)
 
@@ -46,15 +61,35 @@ Check it: `make serve-doctor` — every line should say `ok` and `can_build: tru
 npx skills add IBM/project-palette -g -a claude-code -a bob -y
 ```
 
-That installs it for Claude Code (`~/.claude/skills/palette`) and IBM Bob
-(`~/.bob/skills/palette`). Drop the `-a …` flags to pick agents interactively;
+That puts the skill in `~/.agents/skills/palette` and links it for Claude
+Code (`~/.claude/skills/palette`) and IBM Bob (`~/.bob/skills/palette`). Drop the `-a …` flags to pick agents interactively;
 drop `-g` to install into the current project only. From a checkout,
 `make skill-install-claude` does the same for Claude Code.
 
-### 3. Try it
+---
 
-Open a **new** Claude Code or Bob session (so it picks up `PALETTE_HOME` and
-the skill) and ask:
+## Option B — Remote install (2 steps)
+
+```bash
+echo 'export PALETTE_URL=https://palette.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud' >> ~/.zshrc
+npx skills add IBM/project-palette -g -a claude-code -a bob -y
+```
+
+That's all — no clone, no Python/Node/LibreOffice, no model keys; the server
+has them. Open a **new** Claude Code or Bob session and
+[try it](#try-it). (The URL above is the shared instance; ask Praveen or Anu
+if it moves. Check it's up: `curl -s $PALETTE_URL/health`.)
+
+Decks build on the server and are downloaded into `./deck/` when done. The
+server holds sessions in memory, so a server restart mid-build fails that
+build (the skill says so) — just start it again.
+
+---
+
+## Try it
+
+Open a **new** Claude Code or Bob session (so it picks up the variable and the
+skill) and ask:
 
 > Build me a 3-slide deck explaining prompt caching to backend engineers.
 
@@ -63,7 +98,7 @@ for changes; it then builds the deck (3–10 minutes) into `./deck/deck.pptx`.
 
 ---
 
-## What `PALETTE_HOME` points at
+## What `PALETTE_HOME` points at (Option A)
 
 The skill runs **whatever that checkout contains right now** — its code, on
 whichever branch is checked out, and its `.env`. Switch branches there and the
@@ -89,13 +124,19 @@ npx skills update                                  # the skill (or re-run the ad
 ## How it works
 
 ```
-agent ──► skills/palette/scripts/deck.py ──► $PALETTE_HOME/palette.py ──► models (per .env)
-          (plan · edit · start · status)      same core as the web app       fleet + watsonx, or RITS
+                                   ┌─ remote: $PALETTE_URL ──► Palette web app (HTTP) ─┐
+agent ──► skills/palette/scripts/  │                                                    ├─► same core ──► models
+          deck.py                  └─ local:  $PALETTE_HOME ─► palette.py (+ .env) ────┘    functions     fleet + watsonx
+          (plan · edit · start · status)
 ```
 
-- `deck.py` runs Palette from `$PALETTE_HOME` with that checkout's `.env`, so
-  the skill uses exactly the models the checkout is configured for. Anything
-  already exported in the agent's environment wins over `.env`.
+- **Remote:** `deck.py` calls the app's async endpoints (`/draft_async`,
+  `/edit_plan_async`, `/build_async`, `/result`), then downloads `deck.pptx`
+  and the slide previews into `--out-dir`. The server's own configuration
+  decides the models.
+- **Local:** `deck.py` runs Palette from `$PALETTE_HOME` with that checkout's
+  `.env`, so the skill uses exactly the models the checkout is configured for.
+  Anything already exported in the agent's environment wins over `.env`.
 - Slow steps detach: `plan` returns the plan (usually within 90s), `start`
   kicks off the build and `status` is polled — so hosts that cap how long one
   command may run can't kill a build half-way.
@@ -106,9 +147,11 @@ agent ──► skills/palette/scripts/deck.py ──► $PALETTE_HOME/palette.p
 
 | Symptom | Fix |
 |---|---|
-| `cannot find the Palette checkout` | `PALETTE_HOME` isn't set in the agent's shell — add it to `~/.zshrc` and open a new session |
+| `cannot find the Palette checkout` | Neither variable is set in the agent's shell — add `PALETTE_URL` (remote) or `PALETTE_HOME` (local) to `~/.zshrc` and open a new session |
+| `cannot reach the Palette server at …` (remote) | The server is down or the URL is wrong — `curl -s $PALETTE_URL/health` |
+| `the Palette server no longer knows this build` (remote) | The server restarted mid-build — ask the agent to build again |
 | The agent writes slides itself instead of using the skill | The skill isn't installed where that agent looks — `npx skills list -g` |
-| Build runs past 15 minutes | Models unreachable — `tail -20 deck/build.log`; check `.env` and `make serve-doctor` |
+| Build runs past 15 minutes | Models unreachable — local: `tail -20 deck/build.log`, check `.env` and `make serve-doctor`; remote: the server's GPU fleet may be stopped |
 | `soffice` / `node` not found in the build log | Step 1's `brew install` line |
 | Slide previews on a Mac show a serif fallback instead of IBM Plex | LibreOffice looks fonts up by family name, and IBM's macOS Plex install names weights differently (`IBM Plex Sans Medm`) from the Linux packages the deck targets. Only the local previews/PDF are affected; the `.pptx` still names IBM Plex. The Code Engine app and `make serve-start` (container) render with the right fonts |
 

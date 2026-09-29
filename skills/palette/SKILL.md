@@ -49,10 +49,15 @@ this file. It finds the Palette checkout, runs `palette.py` from there, and
 puts the output where you asked — so you never change directory and never need
 a path into the checkout.
 
-`$PALETTE_HOME` (the checkout containing `palette.py`) has to be set. Model
-access comes from that checkout's `.env` — the palette model on its GPU
-fleet, gpt-oss-120b on watsonx, or `$RITS_API_KEY` — and `deck.py` loads it
-for you.
+One of two variables is set, and `deck.py` picks the mode from it:
+
+- `$PALETTE_URL` — a running Palette server; every command goes to it over
+  HTTP and the finished deck is downloaded into `--out-dir`.
+- `$PALETTE_HOME` — a Palette checkout on this machine; model access comes
+  from that checkout's `.env` (the palette model on its GPU fleet,
+  gpt-oss-120b on watsonx, or `$RITS_API_KEY`), which `deck.py` loads for you.
+
+Commands and output are identical either way.
 
 **Never ask the user for them, and never check them first.** These settings
 are in the environment you are already running in, and you cannot see them

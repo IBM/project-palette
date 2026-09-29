@@ -35,6 +35,18 @@ and an agent relaying "done" from a return value reports a deck that does not
 exist. Conversely a build is only over once it says so in `.palette-exit` —
 liveness cannot be probed by signalling, because a sandbox will not permit it.
 
+Two modes, chosen by one variable:
+
+    local  (default)  $PALETTE_HOME is a Palette checkout on this machine;
+                      palette.py runs from it, with that checkout's .env.
+    remote            $PALETTE_URL is a running Palette server (the web app);
+                      the same commands go over HTTP to its async endpoints,
+                      and the finished .pptx + previews are downloaded into
+                      --out-dir. Nothing else is needed on this machine.
+
+$PALETTE_URL wins when both are set. Commands, flags and JSON output are the
+same in both modes, and both end in the same core functions.
+
 Stdlib only, so it runs wherever the agent does.
 """
 
@@ -47,6 +59,9 @@ import shlex
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
+import uuid
 from pathlib import Path
 
 #: Written into --out-dir so `status` can find the build across separate calls.
@@ -80,8 +95,9 @@ def palette_home() -> Path:
         if (candidate / "palette.py").is_file():
             return candidate
     raise SystemExit(
-        "error: cannot find the Palette checkout. Set PALETTE_HOME to it, e.g.\n"
-        "  export PALETTE_HOME=~/code/project-palette"
+        "error: cannot find the Palette checkout. Set one of:\n"
+        "  export PALETTE_URL=https://<palette-server>      # remote: a running Palette server\n"
+        "  export PALETTE_HOME=~/code/project-palette       # local: a Palette checkout"
     )
 
 
@@ -192,6 +208,233 @@ def palette_env(home: Path) -> dict[str, str]:
             value = str(Path.home() / value[2:])
         env.setdefault(key, value)
     return env
+
+
+# -- remote mode -------------------------------------------------------------
+
+
+def remote_url() -> str | None:
+    """$PALETTE_URL (a Palette server), or None for local mode."""
+    url = os.environ.get("PALETTE_URL", "").strip().rstrip("/")
+    return url or None
+
+
+class RemoteError(Exception):
+    """The Palette server could not be reached, or answered with an error."""
+
+
+def _http(base: str, method: str, path: str, *, body: dict | None = None,
+          form: dict | None = None, files: list[tuple[str, str, bytes]] | None = None,
+          timeout: float = 60) -> tuple[int, bytes]:
+    """One HTTP call to the Palette server. JSON body, or multipart form+files."""
+    headers: dict[str, str] = {}
+    data = None
+    if form is not None or files:
+        boundary = uuid.uuid4().hex
+        chunks: list[bytes] = []
+        for key, value in (form or {}).items():
+            chunks.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"'
+                          f'\r\n\r\n'.encode() + str(value).encode("utf-8") + b"\r\n")
+        for field, filename, content in files or []:
+            chunks.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; '
+                          f'filename="{filename}"\r\nContent-Type: application/octet-stream'
+                          f'\r\n\r\n'.encode() + content + b"\r\n")
+        chunks.append(f"--{boundary}--\r\n".encode())
+        data = b"".join(chunks)
+        headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+    elif body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(base + path, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+    except (urllib.error.URLError, OSError) as exc:
+        raise RemoteError(f"cannot reach the Palette server at {base}: {exc}") from None
+
+
+def _http_json(base: str, method: str, path: str, **kwargs) -> dict:
+    """_http, decoded. Adds `_status`; an HTTP error always carries `error`."""
+    code, raw = _http(base, method, path, **kwargs)
+    try:
+        data = json.loads(raw or b"{}")
+    except ValueError:
+        data = {"error": raw[:300].decode("utf-8", errors="replace")}
+    if not isinstance(data, dict):
+        data = {"value": data}
+    if code >= 400:
+        data.setdefault("error", f"HTTP {code}")
+    data["_status"] = code
+    return data
+
+
+def _remote_error(message: str, **extra) -> int:
+    print(json.dumps({"state": "error", "done": False, "error": message, **extra}, indent=2))
+    return 1
+
+
+def _remote_thread() -> str:
+    """A fresh server session per plan/edit/build: nothing is shared by accident."""
+    return f"skill-{uuid.uuid4().hex[:12]}"
+
+
+def _remote_start_plan(out: Path, label: str, submit, hold: int) -> int:
+    """Remote twin of _start_plan: submit, then hold for the plan like local does."""
+    previous = _load(_sidecar(out, "plan.json"))
+    if previous.get("remote") and _finished_at(_sidecar(out, "plan.exit")) is None:
+        return _remote_plan_status(out, hold)   # already drafting: collect, don't restart
+    base = remote_url()
+    thread = _remote_thread()
+    try:
+        accepted = submit(base, thread)
+    except RemoteError as exc:
+        return _remote_error(str(exc))
+    if accepted["_status"] >= 400:
+        return _remote_error(f"{label} was refused by the Palette server: {accepted['error']}")
+    _sidecar(out, "plan.exit").unlink(missing_ok=True)
+    state = {"state": "running", "stage": label, "remote": base, "thread_id": thread,
+             "plan": str(out), "started_at": int(time.time())}
+    _sidecar(out, "plan.json").write_text(json.dumps(state, indent=2))
+    return _remote_plan_status(out, hold)
+
+
+def _remote_plan_status(out: Path, hold: int) -> int:
+    """Poll /draft_result (plans and edits both land there) for up to *hold* s."""
+    state = _load(_sidecar(out, "plan.json"))
+    base, thread = state["remote"], state["thread_id"]
+    label = state.get("stage", "build-plan")
+    deadline = time.time() + max(0, hold)
+    while True:
+        try:
+            answer = _http_json(base, "GET", f"/draft_result/{thread}", timeout=30)
+        except RemoteError as exc:
+            return _remote_error(str(exc), hint="the plan may still be drafting on the server; poll again")
+        if answer["_status"] == 404:
+            _sidecar(out, "plan.exit").write_text("1")
+            return _remote_error("the Palette server no longer knows this plan (it may have "
+                                 "restarted); run the command again")
+        if answer.get("stage") in ("done", "error") or time.time() >= deadline:
+            break
+        time.sleep(2)
+
+    elapsed = int(time.time()) - int(state.get("started_at", time.time()))
+    if answer.get("stage") == "done":
+        out.write_text(answer.get("plan") or "", encoding="utf-8")
+        _sidecar(out, "plan.exit").write_text("0")
+        result = {"state": "done", "done": True, "plan": str(out), "elapsed_seconds": elapsed,
+                  "text": answer.get("plan") or ""}
+    elif answer.get("stage") == "error":
+        _sidecar(out, "plan.exit").write_text("1")
+        result = {"state": "error", "done": False, "elapsed_seconds": elapsed,
+                  "log_tail": answer.get("error") or "",
+                  "hint": "the Palette server could not write the plan; the tail above says why"}
+    else:
+        result = {"state": "running", "done": False, "elapsed_seconds": elapsed,
+                  "note": (f"{label} is still running — do NOT run {label.split('-')[0]} again, "
+                           f"it would start a second one. Collect this one with plan-status."),
+                  "next": f"python {Path(__file__).name} plan-status --out {out}"}
+    _sidecar(out, "plan.json").write_text(json.dumps({**state, "state": result["state"]}, indent=2))
+    print(json.dumps(result, indent=2))
+    return 0 if result["state"] != "error" else 1
+
+
+def _remote_start(plan: Path, out_dir: Path, palette_family: str | None) -> int:
+    """Remote twin of start: POST /build_async, record the session, return at once."""
+    state_path = out_dir / STATE
+    previous = _load(state_path)
+    if previous.get("remote") and _finished(out_dir) is None:
+        print(json.dumps({**previous, "note": "already building; poll with status"}))
+        return 0
+    base = remote_url()
+    thread = _remote_thread()
+    body = {"plan": plan.read_text(encoding="utf-8"), "thread_id": thread}
+    if palette_family:
+        body["palette_family"] = palette_family
+    try:
+        accepted = _http_json(base, "POST", "/build_async", body=body)
+    except RemoteError as exc:
+        return _remote_error(str(exc))
+    if accepted["_status"] >= 400:
+        return _remote_error(f"the Palette server refused the build: {accepted['error']}")
+    (out_dir / EXIT).unlink(missing_ok=True)
+    state = {"state": "running", "remote": base, "thread_id": thread, "plan": str(plan),
+             "out_dir": str(out_dir), "log": str(out_dir / "build.log"),
+             "started_at": int(time.time())}
+    state_path.write_text(json.dumps(state, indent=2))
+    print(json.dumps({
+        **state,
+        "note": "building on the Palette server — takes 3-10 minutes; poll with `deck.py status`",
+        "next": f"python {Path(__file__).name} status --out-dir {out_dir}",
+    }))
+    return 0
+
+
+def _remote_collect(base: str, thread: str, out_dir: Path, result: dict) -> None:
+    """Download the finished deck and its previews, so `verify` sees them on disk."""
+    code, pptx = _http(base, "GET", f"/download/{thread}", timeout=120)
+    if code != 200:
+        raise RemoteError(f"downloading the deck failed (HTTP {code})")
+    (out_dir / "deck.pptx").write_bytes(pptx)
+    for index in range(1, int(result.get("slide_count") or 0) + 1):
+        code, png = _http(base, "GET", f"/preview/{thread}/{index}", timeout=60)
+        if code == 200:
+            (out_dir / f"slide-{index}.png").write_bytes(png)
+
+
+def _remote_status(out_dir: Path, state: dict, hold: int) -> int:
+    """Remote twin of status: poll /result, then download and verify like local."""
+    base, thread = state["remote"], state["thread_id"]
+    log = Path(state["log"])
+    deadline = time.time() + max(0, hold)
+    progress = ""
+    while True:
+        try:
+            answer = _http_json(base, "GET", f"/result/{thread}", timeout=30)
+            if answer.get("stage") not in ("done", "error"):
+                progress = (_http_json(base, "GET", f"/progress/{thread}", timeout=30)
+                            .get("message") or progress)
+        except RemoteError as exc:
+            return _remote_error(str(exc), hint="the build may still be running on the server; poll again")
+        if answer["_status"] == 404:
+            (out_dir / EXIT).write_text("1")
+            log.write_text("the Palette server no longer knows this build (it may have restarted)\n")
+            answer = {"stage": "error", "error": "the Palette server no longer knows this build "
+                                                 "(it may have restarted); start it again"}
+            break
+        if answer.get("stage") in ("done", "error") or time.time() >= deadline:
+            break
+        time.sleep(3)
+
+    elapsed = int(time.time()) - int(state.get("started_at", time.time()))
+    if answer.get("stage") == "done" and _finished(out_dir) is None:
+        try:
+            _remote_collect(base, thread, out_dir, answer.get("result") or {})
+        except RemoteError as exc:
+            return _remote_error(str(exc), hint="the deck is built on the server; poll again to retry the download")
+        log.write_text(json.dumps(answer.get("result") or {}, indent=2) + "\n")
+        (out_dir / EXIT).write_text("0")
+    elif answer.get("stage") == "error" and _finished(out_dir) is None:
+        log.write_text((answer.get("error") or "build failed") + "\n")
+        (out_dir / EXIT).write_text("1")
+
+    checked = verify(out_dir)
+    if _finished(out_dir) is None:
+        result = {"state": "running", "done": False, "elapsed_seconds": elapsed,
+                  "note": f"still rendering after {elapsed}s of a typical 180-600s build",
+                  "next": f"python {Path(__file__).name} status --out-dir {out_dir}"}
+        if progress:
+            result["progress"] = progress
+    elif checked["verified"]:
+        result = {"state": "done", "done": True, **checked, "elapsed_seconds": elapsed}
+    else:
+        result = {"state": "error", "done": False, "elapsed_seconds": elapsed, **checked,
+                  "log_tail": _tail(log, 15),
+                  "hint": "the build ended without a usable deck; the tail above says why"}
+    (out_dir / STATE).write_text(json.dumps({**state, "state": result["state"]}, indent=2))
+    print(json.dumps(result, indent=2))
+    return 0 if result["state"] != "error" else 1
 
 
 def _run_palette(home: Path, argv: list[str]) -> subprocess.CompletedProcess:
@@ -312,7 +555,8 @@ def _summarise_build(out_dir: Path) -> dict:
     if not state:
         return {"state": "none"}
     checked = verify(out_dir)
-    if _finished_at(out_dir / EXIT) is None and _alive(state.get("pid", -1)) is not False:
+    running_here = state.get("remote") or _alive(state.get("pid", -1)) is not False
+    if _finished_at(out_dir / EXIT) is None and running_here:
         elapsed = int(time.time()) - int(state.get("started_at", time.time()))
         return {"state": "running", "elapsed_seconds": elapsed}
     if checked["verified"]:
@@ -420,7 +664,6 @@ def _start_plan(home: Path, argv: list[str], out: Path, label: str, hold: int) -
 
 def plan(args: argparse.Namespace) -> int:
     """build-plan, with --out resolved against *your* cwd rather than the checkout."""
-    home = palette_home()
     out = Path(args.out).expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -454,6 +697,18 @@ def plan(args: argparse.Namespace) -> int:
         }))
         return 2
 
+    hold = 3600 if args.wait else args.hold_seconds
+    if remote_url():
+        def submit(base: str, thread: str) -> dict:
+            files = [("files", "context.txt", context.encode("utf-8"))] if context else []
+            for source in args.source or []:
+                path = Path(source).expanduser().resolve()
+                files.append(("files", path.name, path.read_bytes()))
+            return _http_json(base, "POST", "/draft_async",
+                              form={"request": request, "thread_id": thread}, files=files)
+        return _remote_start_plan(out, "build-plan", submit, hold)
+
+    home = palette_home()
     argv = ["build-plan", request, "--out", str(out)]
     if context:
         argv += ["--context", context]
@@ -498,6 +753,8 @@ def plan_status(args: argparse.Namespace) -> int:
         return 0
 
     hold = max(0, getattr(args, "hold_seconds", 0))
+    if state.get("remote"):
+        return _remote_plan_status(out, hold)
     deadline = time.time() + hold
     while time.time() < deadline and _finished_at(_sidecar(out, "plan.exit")) is None:
         time.sleep(2)
@@ -533,11 +790,18 @@ def plan_status(args: argparse.Namespace) -> int:
 
 def edit(args: argparse.Namespace) -> int:
     """edit-plan, reading and writing the same file by absolute path."""
-    home = palette_home()
     plan_path = Path(args.plan).expanduser().resolve()
     if not plan_path.is_file():
         raise SystemExit(f"error: no plan at {plan_path}")
     out = Path(args.out).expanduser().resolve() if args.out else plan_path
+    if remote_url():
+        plan_text = plan_path.read_text(encoding="utf-8")
+        def submit(base: str, thread: str) -> dict:
+            return _http_json(base, "POST", "/edit_plan_async", body={
+                "plan": plan_text, "instruction": args.instruction, "thread_id": thread})
+        return _remote_start_plan(out, "edit-plan", submit,
+                                  3600 if args.wait else args.hold_seconds)
+    home = palette_home()
     argv = ["edit-plan", args.instruction, "--plan", str(plan_path), "--out", str(out)]
     if args.wait:
         return _relay(_run_palette(home, argv))
@@ -547,12 +811,14 @@ def edit(args: argparse.Namespace) -> int:
 
 
 def start(args: argparse.Namespace) -> int:
-    home = palette_home()
     out_dir = Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     plan = Path(args.plan).expanduser().resolve()
     if not plan.is_file():
         raise SystemExit(f"error: no plan at {plan}")
+    if remote_url():
+        return _remote_start(plan, out_dir, args.palette_family)
+    home = palette_home()
 
     state_path = out_dir / STATE
     previous = _load(state_path)
@@ -612,6 +878,8 @@ def status(args: argparse.Namespace) -> int:
     # "still running". A build is minutes, so waiting a minute per call costs
     # nothing and collapses thirty turns into a handful.
     hold = max(0, getattr(args, "hold_seconds", 0))
+    if state.get("remote"):
+        return _remote_status(out_dir, state, hold)
     deadline = time.time() + hold
     while time.time() < deadline and _finished(out_dir) is None:
         time.sleep(3)

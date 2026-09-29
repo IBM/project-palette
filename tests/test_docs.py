@@ -24,6 +24,8 @@ DOCS = [
     REPO_ROOT / "docs" / "cli.md",
     REPO_ROOT / "CHEATSHEET.md",
     REPO_ROOT / "skills" / "palette" / "SKILL.md",
+    REPO_ROOT / "skills" / "README.md",
+    REPO_ROOT / "skills" / "palette" / "README.md",
     # The benchmark docs are under the same guard as the rest: they name a lot
     # of `make bench-*` targets, and a doc that tells you to run a target that
     # does not exist is worse than no doc.
@@ -63,20 +65,32 @@ def test_relative_links_resolve(doc: Path) -> None:
 
 @pytest.mark.parametrize("doc", DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
 def test_no_doc_still_describes_the_http_skill(doc: Path) -> None:
-    """Palette is driven as a CLI now; the HTTP client and its server are gone.
+    """The old HTTP-era skill (an orchestrator CLI and a vendored wheel) is gone.
 
-    An agent told to poll `/progress` or install a `palette_skill` wheel follows
-    instructions for software that no longer exists, and the failure looks like
-    the agent's fault rather than the doc's.
+    An agent told to run `palette-skill deck` or install a `palette_skill` wheel
+    follows instructions for software that no longer exists, and the failure
+    looks like the agent's fault rather than the doc's. (Remote mode —
+    `$PALETTE_URL`, which `deck.py` drives over the app's async routes — is a
+    different, current thing; see the test below.)
     """
     text = doc.read_text(encoding="utf-8")
     for banned, why in (
         ("palette-skill deck", "the orchestrator was part of the deleted HTTP client"),
-        ("PALETTE_URL", "there is no server for the skill to point at"),
-        ("build_async", "the async HTTP routes are not how the skill works"),
         ("vendor/palette_skill", "the skill is a folder; there is no wheel to vendor"),
     ):
         assert banned not in text, f"{doc.name} still describes the HTTP skill: {banned!r} ({why})"
+
+
+@pytest.mark.parametrize("doc", DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_remote_mode_is_never_described_without_local_mode(doc: Path) -> None:
+    """`$PALETTE_URL` is an option beside `$PALETTE_HOME`, not a replacement.
+
+    Local mode must keep working and stay documented; a doc that tells a reader
+    only about the server leaves them stuck when it is down or unreachable.
+    """
+    text = doc.read_text(encoding="utf-8")
+    if "PALETTE_URL" in text:
+        assert "PALETTE_HOME" in text, f"{doc.name} describes remote mode but not local mode"
 
 
 @pytest.mark.parametrize("doc", DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))

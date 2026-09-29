@@ -298,8 +298,19 @@ skills/palette/
 
 ### Try it — start here
 
-**Full, short guide: [`skills/palette/README.md`](skills/palette/README.md)** —
-the page to send anyone trying the skill for the first time. In brief:
+**Step-by-step install guide: [`skills/README.md`](skills/README.md)** — the
+page to send anyone trying the skill for the first time (details and
+troubleshooting: [`skills/palette/README.md`](skills/palette/README.md)). Two modes, one
+variable:
+
+**Remote — nothing to install but the skill** (Palette runs on a shared server):
+
+```bash
+export PALETTE_URL=https://palette.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud
+npx skills add IBM/project-palette -g -a claude-code -a bob -y
+```
+
+**Local — Palette on this machine** (for developing Palette, or without the server):
 
 ```bash
 make install                       # once, in this checkout (needs node, poppler, libreoffice)
