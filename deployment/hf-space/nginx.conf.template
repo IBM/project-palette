@@ -1,0 +1,49 @@
+worker_processes auto;
+pid /tmp/nginx.pid;
+error_log /dev/stderr warn;
+
+events { worker_connections 1024; }
+
+http {
+    access_log /dev/stdout;
+    client_body_temp_path /tmp/client_body;
+    proxy_temp_path       /tmp/proxy;
+    fastcgi_temp_path     /tmp/fastcgi;
+    uwsgi_temp_path       /tmp/uwsgi;
+    scgi_temp_path        /tmp/scgi;
+
+    resolver ${RESOLVER} valid=60s ipv6=off;
+    resolver_timeout 10s;
+
+    server {
+        listen 7860;
+        # reference-file uploads on /draft
+        client_max_body_size 50m;
+
+        location = /__proxy_health {
+            default_type text/plain;
+            return 200 "ok\n";
+        }
+
+        location / {
+            ${AUTH_BLOCK}
+            set $upstream ${UPSTREAM_URL};
+            proxy_pass $upstream;
+            proxy_http_version 1.1;
+            proxy_set_header Host ${UPSTREAM_HOST};
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Authorization "";
+            proxy_ssl_server_name on;
+            proxy_ssl_name ${UPSTREAM_HOST};
+
+            # drafts/builds are polled, but /edit and /retry block for a
+            # minute or two; allow up to 10 minutes
+            proxy_connect_timeout 30s;
+            proxy_send_timeout    600s;
+            proxy_read_timeout    600s;
+            proxy_buffering off;
+            proxy_request_buffering off;
+        }
+    }
+}

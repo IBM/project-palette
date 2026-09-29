@@ -6,7 +6,8 @@
 # deployment/DEPLOYMENT.md).
 
 .PHONY: help install dev docker-build docker-run clean \
-        ce-build ce-push ce-buildpush ce-deploy ce-release \
+        ce-build ce-push ce-buildpush ce-cloud-build ce-deploy ce-release \
+        hf-dry-run hf-publish hf-local \
         skill-test skill-install clean-state distclean hooks \
         skill-install-claude skill-package \
         serve-init serve-doctor serve-start serve-stop serve-status serve-logs \
@@ -17,6 +18,13 @@
         bench-react-check bench-clean
 
 PORT ?= 18814
+
+# Runtime settings (model backends + keys) live in ./.env — see .env.example.
+# serve-* targets read it via PALETTE_ENV_FILE; without it they fall back to
+# ~/.config/palette/env.
+ifneq (,$(wildcard .env))
+export PALETTE_ENV_FILE := $(CURDIR)/.env
+endif
 
 # Agent project root the skill installs into. Override per invocation:
 #   make skill-install CUGA=~/code/some-other-agent
@@ -59,8 +67,8 @@ install: ## Install Python + Node deps into .venv (creates it if missing)
 	@$(PY) palette.py --help >/dev/null && echo "ok: palette.py"
 	@$(PY) skills/palette/scripts/deck.py --help >/dev/null && echo "ok: the skill's deck.py"
 
-dev: ## Run the server on http://localhost:$(PORT)
-	$(PY) app.py --port $(PORT)
+dev: ## Run the server on http://localhost:$(PORT) (loads ./.env if present)
+	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; $(PY) app.py --port $(PORT)
 
 # --- Local Docker (native arch) ---
 
@@ -81,10 +89,28 @@ ce-push: ## Push the built image to IBM Container Registry
 ce-buildpush: ## Build linux/amd64 and push to ICR in one step
 	./deployment/buildpush-ce.sh
 
+ce-cloud-build: ## Build linux/amd64 on Code Engine and push to ICR (no local Docker)
+	./deployment/cloud-build.sh
+
 ce-deploy: ## Create or update the Code Engine application
 	./deployment/deploy.sh
 
 ce-release: ce-buildpush ce-deploy ## Build, push, and deploy in sequence
+
+# --- Hugging Face Space (deployment/hf-space: nginx proxy to the CE app) ---
+# Needs huggingface_hub in the venv (uv pip install -U huggingface_hub) and
+# `.venv/bin/hf auth login`. Guide: deployment/hf-space/DEPLOY.md
+HF_SPACE ?= ibm-research/palette-agent
+
+hf-dry-run: ## HF Space: report what a publish would change (read-only)
+	$(PY) deployment/hf-space/publish.py $(HF_SPACE) --dry-run $(ARGS)
+
+hf-publish: ## HF Space: create/update (ARGS=--yes to overwrite our files, --public)
+	$(PY) deployment/hf-space/publish.py $(HF_SPACE) $(ARGS)
+
+hf-local: ## HF Space: build and run the proxy locally on http://localhost:7860
+	docker build -t palette-hf-space deployment/hf-space
+	docker run --rm -p 7860:7860 palette-hf-space
 
 # --- Local service ---
 # Run Palette as a background service on this machine. `serve-start` picks the

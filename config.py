@@ -53,12 +53,23 @@ class ModelSpec:
     base_url: when set (an OpenAI-compatible base ending in /v1, e.g. the
     Code Engine fleet endpoint), llm.chat() POSTs to {base_url}/chat/completions
     with `Authorization: Bearer $PALETTE_CE_API_KEY` instead of the RITS URL
-    scheme + RITS_API_KEY header. None (default) = RITS, unchanged."""
+    scheme + RITS_API_KEY header. None (default) = RITS, unchanged.
+
+    provider: "rits" (default) or "watsonx" — watsonx.ai text/chat, where
+    `payload_model` is the watsonx model_id (see WATSONX_* below)."""
     slug: str
     payload_model: str
     max_tokens: int = 8192
     temperature: float = 0.0
     base_url: str | None = None
+    provider: str = "rits"
+
+
+# --- watsonx.ai --------------------------------------------------------------
+# Used by specs with provider="watsonx". WATSONX_APIKEY is exchanged for an
+# IAM token by llm.py; exactly one of project/space scopes the call.
+WATSONX_URL = os.environ.get("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
+WATSONX_API_VERSION = os.environ.get("WATSONX_API_VERSION", "2024-10-10")
 
 
 # --- models available on RITS ----------------------------------------------
@@ -74,6 +85,21 @@ GPT_OSS_120B = ModelSpec(
     os.environ.get("GPT_OSS_120B_MODEL", "openai/gpt-oss-120b-a100"),
     max_tokens=24000,
 )
+# GPT_OSS_120B_PROVIDER=watsonx: serve gpt-oss-120b (crafter + editor, and any
+# UI pick of it) from watsonx.ai instead of RITS. Only us-south hosts it
+# (catalog checked 2026-09-28; 131K context). Needs WATSONX_APIKEY and
+# WATSONX_PROJECT_ID (or WATSONX_SPACE_ID). Unset -> RITS exactly as before.
+if os.environ.get("GPT_OSS_120B_PROVIDER", "").lower() == "watsonx":
+    GPT_OSS_120B = ModelSpec(
+        "gpt-oss-120b@watsonx",
+        os.environ.get("WATSONX_GPT_OSS_120B_MODEL", "openai/gpt-oss-120b"),
+        max_tokens=24000,
+        provider="watsonx",
+    )
+    import logging as _logging
+    _logging.getLogger("config").warning(
+        "=== gpt-oss-120b (crafter/editor) -> WATSONX.AI: %s (model=%s) — NOT RITS ===",
+        WATSONX_URL, GPT_OSS_120B.payload_model)
 QWEN3_VL = ModelSpec(
     "qwen3-vl-235b-a22b-instruct", "Qwen/Qwen3-VL-235B-A22B-Instruct",
     max_tokens=1500,
@@ -209,6 +235,42 @@ def apply_models(planner: str = "", designer_coder: str = "",
         ROSTER["designer"] = ROSTER["coder"] = DESIGNER_MODELS[designer_coder]
     if correction in CORRECTION_MODELS:
         ROSTER["editor"] = CORRECTION_MODELS[correction]
+
+
+# --- backend availability ----------------------------------------------------
+# A deployment may run with no RITS at all (designer/coder on the CE fleet,
+# gpt-oss-120b on watsonx). These report which backend each spec uses and
+# whether it can be called, so the server warns only when a build would really
+# hit RITS and the UI can grey out menu entries that cannot work.
+# critic is excluded: the Qwen-VL visual pass is not part of the build.
+BUILD_ROLES = ("crafter", "designer", "coder", "editor")
+
+
+def spec_backend(spec: ModelSpec) -> str:
+    if spec.provider == "watsonx":
+        return "watsonx"
+    return "ce-fleet" if spec.base_url else "rits"
+
+
+def spec_usable(spec: ModelSpec) -> bool:
+    if spec_backend(spec) == "rits":
+        return bool(os.environ.get("RITS_API_KEY"))
+    return True
+
+
+def rits_roles() -> list[str]:
+    """Build roles currently routed to RITS."""
+    return [r for r in BUILD_ROLES if spec_backend(ROSTER[r]) == "rits"]
+
+
+def available_models() -> dict[str, list[str]]:
+    """UI menu keys whose model can be called right now, per dropdown."""
+    return {
+        menu: [k for k, spec in models.items() if spec_usable(spec)]
+        for menu, models in (("planner", PLANNER_MODELS),
+                             ("designer", DESIGNER_MODELS),
+                             ("correction", CORRECTION_MODELS))
+    }
 
 
 # Coder calls fan out across slides; this caps concurrent RITS requests.

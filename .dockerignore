@@ -27,3 +27,6 @@ TODO.md
 .env.local
 *.pem
 *.key
+
+# Hugging Face Space proxy — its own image, not part of palette
+deployment/hf-space/

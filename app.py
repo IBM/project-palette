@@ -157,6 +157,17 @@ async def health() -> dict:
         "roster": {role: spec.slug for role, spec in config.ROSTER.items()},
         "icons": len(config.available_icons()),
         "rits_key_set": bool(os.environ.get("RITS_API_KEY")),
+        # false when every build role is on the CE fleet / watsonx
+        "rits_needed": bool(config.rits_roles()),
+        "backends": {role: config.spec_backend(spec)
+                     for role, spec in config.ROSTER.items()},
+        # where designer/coder actually go — the roster slug above stays the
+        # RITS one even when PALETTE_CE_BASE_URL redirects them
+        "designer_backend": config.PALETTE_ADAPTER.base_url or "rits",
+        "gpt_oss_120b_backend": (config.WATSONX_URL
+                                 if config.GPT_OSS_120B.provider == "watsonx"
+                                 else "rits"),
+        "available_models": config.available_models(),
     }
 
 
@@ -603,8 +614,9 @@ def main() -> None:
     # parents=True: PALETTE_WORKSPACE may point somewhere nested that does not
     # exist yet (e.g. ~/.local/state/palette/workspace under a service).
     config.WORKSPACE.mkdir(parents=True, exist_ok=True)
-    if not os.environ.get("RITS_API_KEY"):
-        log.warning("RITS_API_KEY not set — builds will fail until exported.")
+    if config.rits_roles() and not os.environ.get("RITS_API_KEY"):
+        log.warning("RITS_API_KEY not set — %s route to RITS, so builds will "
+                    "fail until it is exported.", ", ".join(config.rits_roles()))
     log.info("icons: %d   roster: %s", len(config.available_icons()),
              {role: spec.slug for role, spec in config.ROSTER.items()})
     print(f"\n  Palette  ->  http://127.0.0.1:{port}\n")

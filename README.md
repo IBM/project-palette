@@ -82,21 +82,32 @@ its own, so a bare `pip install` lands wherever `PATH` points instead.
 
 </details>
 
-### 3. Set your RITS key
+### 3. Configure the model backends
 
-Palette talks to IBM's RITS inference service. Export your bearer token before starting:
+Settings live in `.env` (gitignored; template `.env.example`). Each model role
+can go to a different backend, and each backend is optional:
+
+| Roles | Backend | Settings |
+|---|---|---|
+| designer + coder (the palette fine-tune) | self-hosted Code Engine fleet ([palette-model-fleet](../palette-model-fleet)) | `PALETTE_CE_BASE_URL`, `PALETTE_CE_API_KEY` |
+| crafter + editor (gpt-oss-120b) | watsonx.ai, us-south | `GPT_OSS_120B_PROVIDER=watsonx`, `WATSONX_APIKEY`, `WATSONX_PROJECT_ID` |
+| anything not redirected above | IBM RITS (needs the IBM VPN) | `RITS_API_KEY` |
 
 ```bash
-export RITS_API_KEY=<your key>
+cp .env.example .env      # fill in the fleet + watsonx values for a RITS-free setup
 ```
 
-Without this, the server starts fine but every build will fail at the first model call.
+With the fleet and watsonx configured, `RITS_API_KEY` is not needed; RITS-only
+entries in the UI's model menu (Llama-3.3-70B, the gpt-oss-20b LoRA, base
+Qwen-Coder) are greyed out. With nothing configured, every role uses RITS, as
+before.
 
 ### 4. Run
 
 ```bash
-python app.py
+make dev                  # loads .env, then python app.py
 #   Palette  ->  http://127.0.0.1:18814
+curl -s localhost:18814/health | jq '{rits_needed, backends}'   # where each role goes
 ```
 
 Open the URL. You should see the Palette UI — a chat composer on the left, a deck preview area on the right.
@@ -171,8 +182,8 @@ If you'd rather not install Python / Node / LibreOffice on your machine:
 
 ```bash
 docker build -t palette .
-docker run --rm -p 8080:8080 -e RITS_API_KEY=$RITS_API_KEY palette
-# -> http://localhost:8080
+docker run --rm -p 8080:8080 --env-file .env palette
+# -> http://localhost:8080   (or: make serve-start, which does this for you)
 ```
 
 The Dockerfile installs everything Palette needs — Python, Node, LibreOffice, Poppler, fonts (IBM Plex, Inter, JetBrains Mono, Carlito). ~1.3 GB image, ~5 minutes to build the first time.
@@ -183,7 +194,15 @@ The Dockerfile installs everything Palette needs — Python, Node, LibreOffice, 
 
 | Env var | Required | Default | What |
 |---|---|---|---|
-| `RITS_API_KEY` | **yes** | — | Bearer token for RITS. Without it, builds fail at the first model call. |
+All of these go in `.env` (see `.env.example` for the full, commented list,
+including the Code Engine deployment settings).
+
+| Env var | Required | Default | What |
+|---|---|---|---|
+| `PALETTE_CE_BASE_URL` / `PALETTE_CE_API_KEY` | no | — (RITS) | Designer + coder on the Code Engine fleet endpoint (`http://<lb>/v1` + bearer key) |
+| `GPT_OSS_120B_PROVIDER` | no | — (RITS) | `watsonx` sends gpt-oss-120b (crafter, editor) to watsonx.ai |
+| `WATSONX_APIKEY` / `WATSONX_PROJECT_ID` (or `WATSONX_SPACE_ID`) / `WATSONX_URL` | with watsonx | URL `https://us-south.ml.cloud.ibm.com` | watsonx.ai credentials; only us-south hosts gpt-oss-120b |
+| `RITS_API_KEY` | if any role still uses RITS | — | Bearer token for RITS. `/health` → `rits_needed` says whether it is required |
 | `PORT` | no | `18814` | Bind port. Useful in container deployments where the platform injects a port. |
 | `RITS_BASE_URL` | no | (set in `config.py`) | Override only if pointing at a non-default RITS endpoint. |
 
@@ -195,7 +214,7 @@ The Dockerfile installs everything Palette needs — Python, Node, LibreOffice, 
 started by hand each time. `palette-skill serve` supervises it:
 
 ```bash
-make serve-init      # write ~/.config/palette/env, then put your RITS_API_KEY in it
+cp .env.example .env # or: make serve-init (writes ~/.config/palette/env instead)
 make serve-doctor    # what's missing, per mode — run this first
 make serve-start     # start and wait until /health answers
 make serve-status    # up? which mode? which workspace?
@@ -215,18 +234,27 @@ Three backends, and `serve start` picks one unless you pass `--mode`:
 `process`. Container mode sets its own restart policy, so launchd is only for
 process mode.
 
-**`serve doctor` before anything else.** It checks the checkout, the RITS key,
+**`serve doctor` before anything else.** It checks the checkout, the RITS key
+(or that the fleet + watsonx make it unnecessary),
 Node, `pptxgenjs`, LibreOffice, Poppler, the container runtime, and the image,
 then tells you which modes are ready and what is blocking the rest — rather
 than letting a deck fail three minutes into a build.
 
 ### Configuration
 
-One file, `~/.config/palette/env`, mode 600, read by every mode:
+One file, mode 600, read by every mode: the checkout's `.env` when it exists
+(the Makefile sets `PALETTE_ENV_FILE` to it), otherwise `~/.config/palette/env`.
+Container mode forwards the model settings (`PALETTE_CE_*`, `GPT_OSS_120B_*`,
+`WATSONX_*`, `RITS_*`) into the container.
 
 ```bash
-RITS_API_KEY=...                                  # required for any build
-PALETTE_HOME=/path/to/project-palette             # process + launchd modes
+PALETTE_CE_BASE_URL=http://<palette-lb>/v1         # designer + coder
+PALETTE_CE_API_KEY=...
+GPT_OSS_120B_PROVIDER=watsonx                      # crafter + editor
+WATSONX_APIKEY=...
+WATSONX_PROJECT_ID=...
+# RITS_API_KEY=...                                 # only if a role still uses RITS
+PALETTE_HOME=/path/to/project-palette              # process + launchd modes
 PALETTE_PORT=18814
 PALETTE_WORKSPACE=~/.local/state/palette/workspace
 ```
@@ -446,7 +474,7 @@ render.py          Node + pptxgenjs renderer; LibreOffice → PDF previews
 detector.py        Geometry defect detector (pdfplumber-based, no model)
 refine.py          Stage 3 — detector + editor + verify-gate repair loop
 
-llm.py             RITS HTTP client (custom RITS_API_KEY header)
+llm.py             model client: RITS (RITS_API_KEY header), CE fleet (bearer), watsonx (IAM token)
 session.py         Per-thread session state
 harness_prompts.py System prompts for crafter / critic / editor
 prompts.py         SFT designer + coder prompts (the LoRA's contract)

@@ -163,6 +163,33 @@ class TestModeSelection:
         monkeypatch.setattr(service.shutil, "which", lambda _name: None)
         assert service.container_runtime() is None
 
+    def test_container_gets_the_ce_redirect_from_the_env_file(
+        self, tmp_path: Path, checkout: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A container only sees what is passed with -e. Dropping the CE vars
+        would silently route designer/coder back to RITS."""
+        env_file = tmp_path / "env"
+        env_file.write_text("RITS_API_KEY=r\nPALETTE_CE_BASE_URL=http://lb/v1\n"
+                            "PALETTE_CE_API_KEY=k\nUNRELATED=x\n")
+        cfg = service.resolve_config(home=checkout, env_file=env_file,
+                                     state_dir=tmp_path / "state")
+        monkeypatch.setattr(service, "container_runtime", lambda: "docker")
+        monkeypatch.setattr(service, "image_available", lambda _cfg: True)
+        monkeypatch.setattr(service, "running_container", lambda _cfg: None)
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **_kw):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="abc123\n", stderr="")
+
+        monkeypatch.setattr(service.subprocess, "run", fake_run)
+        service.start_container(cfg)
+        run_cmd = next(c for c in calls if c[1] == "run")
+        for expected in ("RITS_API_KEY=r", "PALETTE_CE_BASE_URL=http://lb/v1",
+                         "PALETTE_CE_API_KEY=k"):
+            assert expected in run_cmd
+        assert not any(arg.startswith("UNRELATED=") for arg in run_cmd)
+
 
 # -- failure messages ------------------------------------------------------
 
@@ -206,6 +233,9 @@ class TestActionableFailures:
         monkeypatch.setattr(service, "probe", lambda _cfg, timeout=3.0: None)
         monkeypatch.setattr(service, "start", lambda _cfg, _mode: {"mode": "process"})
         monkeypatch.setattr(service, "wait_until_healthy", lambda _cfg, timeout=90.0: None)
+        # read_logs prefers a live container's logs; a real `palette` service
+        # on the host would otherwise replace the stub log file
+        monkeypatch.setattr(service, "running_container", lambda _cfg: None)
         with pytest.raises(ServiceError, match="ModuleNotFoundError"):
             service.ensure(cfg, timeout=0.1)
 

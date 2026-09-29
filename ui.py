@@ -473,6 +473,29 @@ function cancel() {
   fetch('/abort/' + TID, { method: 'POST' }).catch(() => {})
 }
 
+// Long operations (draft, build) run as server-side background jobs polled
+// with short requests. A single blocking request would outlive the timeouts
+// of whatever sits in front of the server — Code Engine cuts requests at 300s
+// and hosted proxies (e.g. a Hugging Face Space) have their own limits —
+// while a big deck can take 10 minutes. Transient network or 5xx errors keep
+// polling; a 4xx (e.g. server restarted, session gone) ends the job.
+async function pollJob(url, signal) {
+  while (true) {
+    await new Promise(r => setTimeout(r, 1500))
+    if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError')
+    let r
+    try { r = await fetch(url, { signal }) }
+    catch (e) { if (e.name === 'AbortError') throw e; continue }
+    if (!r.ok) {
+      if (r.status >= 500) continue
+      const d = await r.json().catch(() => ({}))
+      throw new Error(d.error || r.statusText)
+    }
+    const d = await r.json()
+    if (d.stage === 'done' || d.stage === 'error') return d
+  }
+}
+
 function pollProgress(statusEl) {
   let live = true
   ;(async () => {
@@ -525,14 +548,16 @@ async function draft(request) {
   const sourceNames = attachedFiles.map(f => f.name)
   currentAbort = new AbortController()
   try {
-    const r = await fetch('/draft', { method: 'POST', body: fd,
+    const r = await fetch('/draft_async', { method: 'POST', body: fd,
       signal: currentAbort.signal })
-    const d = await r.json()
+    const started = await r.json()
+    if (!r.ok) throw new Error(started.error || r.statusText)
+    const d = await pollJob('/draft_result/' + TID, currentAbort.signal)
+    if (d.stage === 'error') throw new Error(d.error || 'draft failed')
     status.remove()
-    if (!r.ok) throw new Error(d.error || r.statusText)
     attachedFiles = []; renderAttached()
     addMsg('bot', "Here's a plan — review and edit it below, then Build.")
-    addPlanCard(d.plan || '', d.sources || sourceNames)
+    addPlanCard(d.plan || '', started.sources || sourceNames)
     mode = 'plan'
   } catch (err) {
     if (err.name === 'AbortError') {
@@ -677,16 +702,19 @@ async function buildDeck(card) {
   const stop = pollProgress(status)
   currentAbort = new AbortController()
   try {
-    const r = await fetch('/build', {
+    const r = await fetch('/build_async', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ plan, thread_id: TID, palette_family: palette,
         planner: $('mPlanner').value, designer_coder: $('mDesigner').value,
         critic: $('mCritic').value }),
       signal: currentAbort.signal
     })
-    const d = await r.json()
+    const started = await r.json()
+    if (!r.ok) throw new Error(started.error || r.statusText)
+    const job = await pollJob('/result/' + TID, currentAbort.signal)
+    if (job.stage === 'error') throw new Error(job.error || 'build failed')
+    const d = job.result || {}
     stop(); status.remove()
-    if (!r.ok) throw new Error(d.error || r.statusText)
     const btn = card.querySelector('.btn')
     btn.disabled = false
     btn.textContent = 'Regenerate deck'
@@ -928,6 +956,23 @@ document.addEventListener('keydown', e => {
 renderEmpty()
 fetch('/health').then(r => r.json()).then(h => {
   if (h && h.roster) $('modelChip').textContent = 'designer: ' + h.roster.designer
+  // Grey out menu entries whose backend is not configured here (e.g. RITS
+  // models on a deployment with no RITS key); keep a usable selection.
+  const avail = h && h.available_models
+  if (!avail) return
+  for (const [id, menu] of [['mPlanner', 'planner'], ['mDesigner', 'designer'],
+                            ['mCritic', 'correction']]) {
+    const sel = $(id), ok = new Set(avail[menu] || [])
+    if (!sel || !ok.size) continue
+    for (const opt of sel.options) {
+      opt.disabled = !ok.has(opt.value)
+      if (opt.disabled) opt.title = 'not configured on this server'
+    }
+    if (sel.selectedOptions[0] && sel.selectedOptions[0].disabled) {
+      const first = [...sel.options].find(o => !o.disabled)
+      if (first) sel.value = first.value
+    }
+  }
 }).catch(() => {})
 
 ;(function setupDivider() {

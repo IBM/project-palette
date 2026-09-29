@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
             f"Install the server dependencies:  pip install -e '{home}[server]'"
         )
 
-    if not os.environ.get("RITS_API_KEY"):
+    if app.config.rits_roles() and not os.environ.get("RITS_API_KEY"):
         print(
             f"palette-serve: RITS_API_KEY is not set (checked {cfg.env_file} and the environment).\n"
             "               The server will start, but every build will fail at the first model call.",

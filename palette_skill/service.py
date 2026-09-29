@@ -65,6 +65,27 @@ DEFAULT_PORT = 18814
 
 CHECKOUT_MARKERS = ("app.py", "config.py", "pipeline.py")
 
+#: Env-file / environment settings forwarded into the container. Process and
+#: launchd modes inherit the whole env file; a container only sees what is
+#: passed explicitly, so every setting config.py reads must be listed here —
+#: a missing PALETTE_CE_BASE_URL silently sends designer/coder back to RITS.
+CONTAINER_ENV_KEYS = (
+    "RITS_API_KEY",
+    "RITS_BASE_URL",
+    "PALETTE_CE_BASE_URL",
+    "PALETTE_CE_API_KEY",
+    "PALETTE_ADAPTER_SLUG",
+    "PALETTE_ADAPTER_MODEL",
+    "GPT_OSS_120B_SLUG",
+    "GPT_OSS_120B_MODEL",
+    "GPT_OSS_120B_PROVIDER",
+    "WATSONX_APIKEY",
+    "WATSONX_PROJECT_ID",
+    "WATSONX_SPACE_ID",
+    "WATSONX_URL",
+    "WATSONX_GPT_OSS_120B_MODEL",
+)
+
 
 class ServiceError(RuntimeError):
     """Something about the local service is wrong, with an actionable message.
@@ -177,6 +198,9 @@ def resolve_config(
     image: str | None = None,
 ) -> ServiceConfig:
     """Build a config from arguments, the env file, and the environment."""
+    # explicit arg > PALETTE_ENV_FILE (the Makefile points it at the
+    # checkout's .env when one exists) > ~/.config/palette/env
+    env_file = env_file or os.environ.get("PALETTE_ENV_FILE")
     resolved_env_file = Path(env_file).expanduser() if env_file else DEFAULT_ENV_FILE
     env = load_env_file(resolved_env_file)
 
@@ -337,7 +361,9 @@ def status(cfg: ServiceConfig) -> dict[str, Any]:
         "container": container,
         "launchd": launchd_loaded(cfg),
         "rits_key_set": bool(health.get("rits_key_set")) if health else None,
+        "rits_needed": health.get("rits_needed", True) if health else None,
         "roster": health.get("roster") if health else None,
+        "designer_backend": health.get("designer_backend") if health else None,
         "home": str(cfg.home) if cfg.home else None,
         "workspace": str(cfg.workspace),
         "env_file": str(cfg.env_file),
@@ -360,10 +386,18 @@ def doctor(cfg: ServiceConfig) -> dict[str, Any]:
     has_image = image_available(cfg) if runtime else False
     pptxgenjs = bool(cfg.home and (cfg.home / "node_modules" / "pptxgenjs").is_dir())
     key = bool(cfg.env.get("RITS_API_KEY") or os.environ.get("RITS_API_KEY"))
+    setting = lambda name: cfg.env.get(name) or os.environ.get(name) or ""  # noqa: E731
+    # RITS is only needed when some build role still routes there: designer/
+    # coder without PALETTE_CE_BASE_URL, or gpt-oss-120b without watsonx.
+    rits_needed = not (setting("PALETTE_CE_BASE_URL")
+                       and setting("GPT_OSS_120B_PROVIDER").lower() == "watsonx")
 
     checks = {
         "checkout": {"ok": cfg.home is not None, "detail": str(cfg.home or "not found — set PALETTE_HOME")},
-        "rits_key": {"ok": key, "detail": f"from {cfg.env_file}" if cfg.env.get("RITS_API_KEY") else
+        "rits_key": {"ok": key or not rits_needed,
+                     "detail": "not needed — designer/coder on CE fleet, gpt-oss-120b on watsonx"
+                     if not rits_needed and not key else
+                     f"from {cfg.env_file}" if cfg.env.get("RITS_API_KEY") else
                      ("from environment" if key else f"missing — add RITS_API_KEY to {cfg.env_file}")},
         "node": {"ok": bool(node), "detail": node or "missing — brew install node"},
         "pptxgenjs": {"ok": pptxgenjs, "detail": "installed" if pptxgenjs else
@@ -391,7 +425,7 @@ def doctor(cfg: ServiceConfig) -> dict[str, Any]:
         },
         # A build needs the key wherever it runs; call it out separately since
         # the server starts happily without one and only fails at model time.
-        "can_build": key,
+        "can_build": key or not rits_needed,
     }
 
 
@@ -457,9 +491,10 @@ def start_container(cfg: ServiceConfig) -> dict[str, Any]:
         "--restart", "unless-stopped",
         "-p", f"{cfg.port}:{CONTAINER_PORT}",
     ]
-    key = cfg.env.get("RITS_API_KEY") or os.environ.get("RITS_API_KEY")
-    if key:
-        command += ["-e", f"RITS_API_KEY={key}"]
+    for name in CONTAINER_ENV_KEYS:
+        value = cfg.env.get(name) or os.environ.get(name)
+        if value:
+            command += ["-e", f"{name}={value}"]
     command.append(cfg.image)
 
     result = subprocess.run(command, capture_output=True, text=True)
@@ -627,6 +662,12 @@ PALETTE_PORT={port}
 
 # Session decks. Kept out of the source tree so the service is well-behaved.
 PALETTE_WORKSPACE={workspace}
+
+# Optional: serve designer+coder from the self-hosted Code Engine fleet instead
+# of RITS (crafter/critic/editor stay on RITS). Bearer key = the fleet repo's
+# .serve_api_key. Leave unset for pure RITS.
+# PALETTE_CE_BASE_URL=http://<palette-lb-hostname>/v1
+# PALETTE_CE_API_KEY=
 """
 
 
@@ -651,8 +692,11 @@ def format_status(payload: dict[str, Any]) -> str:
     """Human-readable one-liner for shells and log lines."""
     if payload.get("running"):
         mode = payload.get("mode") or "unknown"
-        key = "" if payload.get("rits_key_set") else "  [!] RITS_API_KEY not set — builds will fail"
-        return f"Palette is up at {payload['url']} (mode={mode}){key}"
+        key = ("  [!] RITS_API_KEY not set — builds will fail"
+               if payload.get("rits_needed", True) and not payload.get("rits_key_set") else "")
+        backend = payload.get("designer_backend")
+        designer = f", designer/coder -> {backend}" if backend else ""
+        return f"Palette is up at {payload['url']} (mode={mode}{designer}){key}"
     return f"Palette is NOT running at {payload['url']} — start it with `palette-skill serve start`"
 
 

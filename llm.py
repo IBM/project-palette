@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -23,6 +24,43 @@ log = logging.getLogger("llm")
 _body_log = logging.getLogger("llm.responses")
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+
+_IAM_URL = "https://iam.cloud.ibm.com/identity/token"
+_iam_lock = threading.Lock()
+_iam_token: tuple[str, float] | None = None  # (token, expiry epoch)
+
+
+def _watsonx_token() -> str:
+    """IAM bearer token for watsonx.ai, cached until 5 min before expiry.
+    Locked: coder/editor calls run in parallel threads and should share one
+    exchange rather than stampede IAM."""
+    global _iam_token
+    with _iam_lock:
+        if _iam_token and time.time() < _iam_token[1] - 300:
+            return _iam_token[0]
+        api_key = os.environ.get("WATSONX_APIKEY")
+        if not api_key:
+            raise RuntimeError(
+                "WATSONX_APIKEY is not set — required because "
+                "GPT_OSS_120B_PROVIDER=watsonx routes this model to watsonx.ai.")
+        resp = httpx.post(_IAM_URL, timeout=30.0, data={
+            "grant_type": "urn:ibm:params:oauth:grant-type:apikey",
+            "apikey": api_key,
+        })
+        resp.raise_for_status()
+        data = resp.json()
+        _iam_token = (data["access_token"],
+                      float(data.get("expiration", time.time() + 3600)))
+        return _iam_token[0]
+
+
+def _watsonx_scope() -> dict:
+    if project := os.environ.get("WATSONX_PROJECT_ID"):
+        return {"project_id": project}
+    if space := os.environ.get("WATSONX_SPACE_ID"):
+        return {"space_id": space}
+    raise RuntimeError("watsonx needs WATSONX_PROJECT_ID or WATSONX_SPACE_ID.")
 
 
 def _post_with_retry(url: str, headers: dict, payload: dict, timeout: float,
@@ -62,7 +100,12 @@ def chat(spec: config.ModelSpec, messages: list[dict], *,
     trace when the server exposes it separately (gpt-oss / Qwen reasoning
     models). Either may be empty.
     """
-    if spec.base_url:
+    if spec.provider == "watsonx":
+        url = (f"{config.WATSONX_URL.rstrip('/')}/ml/v1/text/chat"
+               f"?version={config.WATSONX_API_VERSION}")
+        headers = {"Authorization": f"Bearer {_watsonx_token()}"}
+        backend = "WATSONX"
+    elif spec.base_url:
         # Self-hosted OpenAI-compatible endpoint (Code Engine fleet):
         # flat /chat/completions path, standard bearer auth.
         api_key = os.environ.get("PALETTE_CE_API_KEY")
@@ -86,6 +129,10 @@ def chat(spec: config.ModelSpec, messages: list[dict], *,
         "max_tokens": max_tokens or spec.max_tokens,
         "temperature": spec.temperature if temperature is None else temperature,
     }
+    if spec.provider == "watsonx":
+        # text/chat names the model `model_id` and needs a project or space
+        payload["model_id"] = payload.pop("model")
+        payload.update(_watsonx_scope())
 
     t0 = time.time()
     log.info("-> [%s] %s (%d msgs, max_tokens=%d) url=%s",
