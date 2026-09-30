@@ -146,7 +146,7 @@ Full guide: [`hf-space/DEPLOY.md`](./hf-space/DEPLOY.md).
 - **Sizing.** 4 vCPU / 8 GB (raised from 2 / 4 on 2026-09-28 for several
   concurrent builds: LibreOffice rendering and PDF previews are CPU-bound).
   `min-scale=1` avoids cold starts (the image is ~450 MB compressed). The GPU
-  fleet, not this app, limits concurrency — ~2-3 decks at once; see
+  fleet, not this app, limits concurrency — ~5 decks at once on the H100 (fp8); see
   palette-model-fleet `ARCHITECTURE.md` §3.
 - **One instance only.** Sessions live in memory and the UI polls for results;
   Code Engine has no session affinity, so `CE_MAX_SCALE` > 1 breaks polling
