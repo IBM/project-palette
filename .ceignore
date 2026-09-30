@@ -1,0 +1,18 @@
+# Excluded from `ibmcloud ce buildrun --source .` uploads (deployment/cloud-build.sh).
+# The upload is stored as a source bundle in the registry, so secrets must
+# never be in it — .dockerignore alone does not cover the upload.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.git/
+.venv/
+venv/
+node_modules/
+workspace/
+__pycache__/
+*.py[cod]
+benchmark/runs/
+.pytest_cache/
+.DS_Store

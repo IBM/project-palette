@@ -17,7 +17,13 @@ ROOT = Path(__file__).resolve().parent
 ICONS_DIR = ROOT / "icons" / "carbon"
 ASSETS_DIR = ROOT / "assets"
 REFERENCE_PLANS = ROOT / "reference_plans"
-WORKSPACE = ROOT / "workspace"
+
+# Per-session decks. Defaults to ./workspace for local dev, where keeping
+# artifacts next to the source is convenient. Override with PALETTE_WORKSPACE
+# when running Palette as a long-lived service: a service should not write
+# state into its own source tree, and a sandboxed caller may not be permitted
+# to write there at all.
+WORKSPACE = Path(os.environ.get("PALETTE_WORKSPACE") or (ROOT / "workspace")).expanduser()
 
 # Curated user-facing example plans for the "Start from an example plan"
 # button. Tuple = (filename in REFERENCE_PLANS, display label in the UI).
@@ -42,11 +48,28 @@ RITS_BASE_URL = os.environ.get(
 @dataclass(frozen=True)
 class ModelSpec:
     """A RITS-served model. `slug` is the URL path segment; `payload_model`
-    is the `model` field in the request body."""
+    is the `model` field in the request body.
+
+    base_url: when set (an OpenAI-compatible base ending in /v1, e.g. the
+    Code Engine fleet endpoint), llm.chat() POSTs to {base_url}/chat/completions
+    with `Authorization: Bearer $PALETTE_CE_API_KEY` instead of the RITS URL
+    scheme + RITS_API_KEY header. None (default) = RITS, unchanged.
+
+    provider: "rits" (default) or "watsonx" — watsonx.ai text/chat, where
+    `payload_model` is the watsonx model_id (see WATSONX_* below)."""
     slug: str
     payload_model: str
     max_tokens: int = 8192
     temperature: float = 0.0
+    base_url: str | None = None
+    provider: str = "rits"
+
+
+# --- watsonx.ai --------------------------------------------------------------
+# Used by specs with provider="watsonx". WATSONX_APIKEY is exchanged for an
+# IAM token by llm.py; exactly one of project/space scopes the call.
+WATSONX_URL = os.environ.get("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
+WATSONX_API_VERSION = os.environ.get("WATSONX_API_VERSION", "2024-10-10")
 
 
 # --- models available on RITS ----------------------------------------------
@@ -62,6 +85,21 @@ GPT_OSS_120B = ModelSpec(
     os.environ.get("GPT_OSS_120B_MODEL", "openai/gpt-oss-120b-a100"),
     max_tokens=24000,
 )
+# GPT_OSS_120B_PROVIDER=watsonx: serve gpt-oss-120b (crafter + editor, and any
+# UI pick of it) from watsonx.ai instead of RITS. Only us-south hosts it
+# (catalog checked 2026-09-28; 131K context). Needs WATSONX_APIKEY and
+# WATSONX_PROJECT_ID (or WATSONX_SPACE_ID). Unset -> RITS exactly as before.
+if os.environ.get("GPT_OSS_120B_PROVIDER", "").lower() == "watsonx":
+    GPT_OSS_120B = ModelSpec(
+        "gpt-oss-120b@watsonx",
+        os.environ.get("WATSONX_GPT_OSS_120B_MODEL", "openai/gpt-oss-120b"),
+        max_tokens=24000,
+        provider="watsonx",
+    )
+    import logging as _logging
+    _logging.getLogger("config").warning(
+        "=== gpt-oss-120b (crafter/editor) -> WATSONX.AI: %s (model=%s) — NOT RITS ===",
+        WATSONX_URL, GPT_OSS_120B.payload_model)
 QWEN3_VL = ModelSpec(
     "qwen3-vl-235b-a22b-instruct", "Qwen/Qwen3-VL-235B-A22B-Instruct",
     max_tokens=1500,
@@ -86,9 +124,15 @@ QWEN3_VL = ModelSpec(
 # Slug/model overridable via env. To temporarily roll back to the gpt-oss-20b
 # adapter, set: PALETTE_ADAPTER_SLUG=gpt-oss-20b-palette-lora and
 # PALETTE_ADAPTER_MODEL=palette-gpt-20b.
+# PALETTE_CE_BASE_URL (optional): serve designer+coder from the self-hosted
+# Code Engine fleet endpoint instead of RITS. Set to e.g.
+#   http://<lb-hostname>/v1   (+ PALETTE_CE_API_KEY for the bearer token)
+# Unset -> RITS exactly as before. Only this spec is redirected; crafter,
+# critic and editor keep their RITS specs.
 PALETTE_ADAPTER = ModelSpec(
     os.environ.get("PALETTE_ADAPTER_SLUG", "qwen2-5-coder-32b-palette-lora"),
     os.environ.get("PALETTE_ADAPTER_MODEL", "palette-qwen-32b"),
+    base_url=os.environ.get("PALETTE_CE_BASE_URL") or None,
     # 32K total context on the Qwen2.5 endpoint and RITS rejects upfront when
     # input_tokens + max_tokens > 32768 (verified 2026-06-11 by capturing a
     # 400 body on a 17K-char Education plan: "8769 input + 24000 output =
@@ -101,6 +145,14 @@ PALETTE_ADAPTER = ModelSpec(
 # The OLD fine-tuned palette adapter on gpt-oss-20b base. Kept as a UI option
 # for side-by-side comparisons during the v3_qwen25 migration; the LoRA-on-
 # gpt-oss endpoint is still running on RITS in parallel with the new one.
+# Loud, unmissable startup banner when the CE redirect is active — so a log
+# file's first lines settle "was this run on CE or RITS" at a glance.
+if PALETTE_ADAPTER.base_url:
+    import logging as _logging
+    _logging.getLogger("config").warning(
+        "=== designer/coder -> SELF-HOSTED CODE ENGINE FLEET: %s (model=%s) — NOT RITS ===",
+        PALETTE_ADAPTER.base_url, PALETTE_ADAPTER.payload_model)
+
 PALETTE_ADAPTER_GPT = ModelSpec(
     "gpt-oss-20b-palette-lora",
     "palette-gpt-20b",
@@ -183,6 +235,42 @@ def apply_models(planner: str = "", designer_coder: str = "",
         ROSTER["designer"] = ROSTER["coder"] = DESIGNER_MODELS[designer_coder]
     if correction in CORRECTION_MODELS:
         ROSTER["editor"] = CORRECTION_MODELS[correction]
+
+
+# --- backend availability ----------------------------------------------------
+# A deployment may run with no RITS at all (designer/coder on the CE fleet,
+# gpt-oss-120b on watsonx). These report which backend each spec uses and
+# whether it can be called, so the server warns only when a build would really
+# hit RITS and the UI can grey out menu entries that cannot work.
+# critic is excluded: the Qwen-VL visual pass is not part of the build.
+BUILD_ROLES = ("crafter", "designer", "coder", "editor")
+
+
+def spec_backend(spec: ModelSpec) -> str:
+    if spec.provider == "watsonx":
+        return "watsonx"
+    return "ce-fleet" if spec.base_url else "rits"
+
+
+def spec_usable(spec: ModelSpec) -> bool:
+    if spec_backend(spec) == "rits":
+        return bool(os.environ.get("RITS_API_KEY"))
+    return True
+
+
+def rits_roles() -> list[str]:
+    """Build roles currently routed to RITS."""
+    return [r for r in BUILD_ROLES if spec_backend(ROSTER[r]) == "rits"]
+
+
+def available_models() -> dict[str, list[str]]:
+    """UI menu keys whose model can be called right now, per dropdown."""
+    return {
+        menu: [k for k, spec in models.items() if spec_usable(spec)]
+        for menu, models in (("planner", PLANNER_MODELS),
+                             ("designer", DESIGNER_MODELS),
+                             ("correction", CORRECTION_MODELS))
+    }
 
 
 # Coder calls fan out across slides; this caps concurrent RITS requests.

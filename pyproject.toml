@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# Packages the web-UI supervisor (`palette_skill`) — the `make serve-*`
+# targets — and nothing else. app.py / config.py / pipeline.py / render.py /
+# session.py stay top-level modules on purpose: they are imported by relative
+# import from the checkout, and putting them on an installed sys.path would
+# collide with whatever else owns `config` or `session` there.
+#
+# The agent skill is NOT here. It is a folder of plain files under
+# skills/palette/ with no build step at all — see skills/palette/SKILL.md.
+# Nothing about the skill is installed, generated, or versioned by this file.
+[project]
+name = "palette-skill"
+dynamic = ["version"]
+description = "Palette's local service supervisor (make serve-*)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "httpx>=0.27",
+]
+
+[project.scripts]
+# Runs the Palette server in the foreground from a checkout. Needs the
+# `server` extra installed and PALETTE_HOME (or a discoverable checkout);
+# fails with an actionable message otherwise.
+palette-serve = "palette_skill.server_entry:main"
+
+[project.optional-dependencies]
+# The server's own dependencies — the single source of truth, mirrored by
+# requirements.txt for the Dockerfile's cache-friendly two-step install.
+#   pip install -e '.[server]'
+server = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "pydantic",
+    "pdfplumber",
+    "python-multipart",
+    "python-docx",
+    "python-pptx",
+    "pymupdf",
+]
+# Everything needed to run the contract tests against the live app.
+dev = [
+    "palette-skill[server]",
+    "pytest>=8",
+]
+
+[tool.setuptools]
+packages = ["palette_skill"]
+
+[tool.setuptools.dynamic]
+version = { attr = "palette_skill.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

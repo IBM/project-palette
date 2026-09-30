@@ -26,6 +26,17 @@ class SlideSession:
     lint: list[str] = field(default_factory=list)
     building: bool = False
     progress: dict[str, Any] = field(default_factory=_idle)
+    # Terminal state of the most recent background build (POST /build_async).
+    # The blocking POST /build returns its payload inline and never reads
+    # these; /result is the only consumer. Exactly one is set once a
+    # background build ends.
+    last_result: dict[str, Any] | None = None
+    last_error: str | None = None
+    # Same pattern for Stage 1 (POST /draft_async). Crafting a plan from
+    # reference documents runs 60-90s, so it is polled rather than awaited.
+    drafting: bool = False
+    last_plan: str | None = None
+    last_draft_error: str | None = None
     # The FileHandler app.py installs at session creation, writing this
     # session's logs to root/session.log. Stashed so /clear can detach +
     # close it cleanly. Not part of the dataclass equality contract.
@@ -57,3 +68,7 @@ class SlideSession:
         self.previews = []
         self.lint = []
         self.progress = _idle()
+        self.last_result = None
+        self.last_error = None
+        # last_plan/drafting are deliberately NOT reset: a build follows a
+        # draft in the same session, and reset() runs at build start.

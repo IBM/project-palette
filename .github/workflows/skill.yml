@@ -1,0 +1,37 @@
+# The skill (skills/palette) drives palette.py's CLI. These tests read
+# palette.py's argparse setup and the docs, and fail if the skill names a
+# command or flag that doesn't exist, links break, or a second SKILL.md
+# appears (which would hide the skill from `npx skills add`). No network,
+# no models, no rendering.
+name: skill
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "skills/**"
+      - "palette.py"
+      - "config.py"
+      - "app.py"
+      - "palette_skill/**"
+      - "tests/**"
+      - "docs/**"
+      - "**/*.md"
+      - "Makefile"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e '.[dev]'
+
+      - name: Tests (skill, docs, service supervisor)
+        run: python -m pytest tests/ -q

@@ -1,0 +1,13 @@
+# Dependencies for the ReAct host only. Kept here rather than in the repo's
+# pyproject.toml on purpose: this host is additive, and Palette's own packaging
+# should not grow a dependency because a benchmark host wanted one.
+#
+#   python -m venv agents/.venv && agents/.venv/bin/pip install -r agents/requirements.txt
+#
+# Or skip it entirely and use an interpreter that already has these — CUGA's
+# venv does, which is also what the benchmark's other runners use.
+
+langgraph>=0.2
+langchain-core>=0.3
+langchain-ibm>=0.3          # ChatWatsonx
+pytest>=8                   # the offline suite

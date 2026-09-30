@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -23,6 +24,43 @@ log = logging.getLogger("llm")
 _body_log = logging.getLogger("llm.responses")
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+
+_IAM_URL = "https://iam.cloud.ibm.com/identity/token"
+_iam_lock = threading.Lock()
+_iam_token: tuple[str, float] | None = None  # (token, expiry epoch)
+
+
+def _watsonx_token() -> str:
+    """IAM bearer token for watsonx.ai, cached until 5 min before expiry.
+    Locked: coder/editor calls run in parallel threads and should share one
+    exchange rather than stampede IAM."""
+    global _iam_token
+    with _iam_lock:
+        if _iam_token and time.time() < _iam_token[1] - 300:
+            return _iam_token[0]
+        api_key = os.environ.get("WATSONX_APIKEY")
+        if not api_key:
+            raise RuntimeError(
+                "WATSONX_APIKEY is not set — required because "
+                "GPT_OSS_120B_PROVIDER=watsonx routes this model to watsonx.ai.")
+        resp = httpx.post(_IAM_URL, timeout=30.0, data={
+            "grant_type": "urn:ibm:params:oauth:grant-type:apikey",
+            "apikey": api_key,
+        })
+        resp.raise_for_status()
+        data = resp.json()
+        _iam_token = (data["access_token"],
+                      float(data.get("expiration", time.time() + 3600)))
+        return _iam_token[0]
+
+
+def _watsonx_scope() -> dict:
+    if project := os.environ.get("WATSONX_PROJECT_ID"):
+        return {"project_id": project}
+    if space := os.environ.get("WATSONX_SPACE_ID"):
+        return {"space_id": space}
+    raise RuntimeError("watsonx needs WATSONX_PROJECT_ID or WATSONX_SPACE_ID.")
 
 
 def _post_with_retry(url: str, headers: dict, payload: dict, timeout: float,
@@ -62,33 +100,56 @@ def chat(spec: config.ModelSpec, messages: list[dict], *,
     trace when the server exposes it separately (gpt-oss / Qwen reasoning
     models). Either may be empty.
     """
-    api_key = os.environ.get("RITS_API_KEY")
-    if not api_key:
-        raise RuntimeError("RITS_API_KEY is not set — export it before running.")
-
-    url = f"{config.RITS_BASE_URL}/{spec.slug}/v1/chat/completions"
+    if spec.provider == "watsonx":
+        url = (f"{config.WATSONX_URL.rstrip('/')}/ml/v1/text/chat"
+               f"?version={config.WATSONX_API_VERSION}")
+        headers = {"Authorization": f"Bearer {_watsonx_token()}"}
+        backend = "WATSONX"
+    elif spec.base_url:
+        # Self-hosted OpenAI-compatible endpoint (Code Engine fleet):
+        # flat /chat/completions path, standard bearer auth.
+        api_key = os.environ.get("PALETTE_CE_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "PALETTE_CE_API_KEY is not set — required because "
+                "PALETTE_CE_BASE_URL redirects this model to the CE endpoint.")
+        url = f"{spec.base_url.rstrip('/')}/chat/completions"
+        headers = {"Authorization": f"Bearer {api_key}"}
+        backend = "CE-FLEET"
+    else:
+        api_key = os.environ.get("RITS_API_KEY")
+        if not api_key:
+            raise RuntimeError("RITS_API_KEY is not set — export it before running.")
+        url = f"{config.RITS_BASE_URL}/{spec.slug}/v1/chat/completions"
+        headers = {"RITS_API_KEY": api_key}
+        backend = "RITS"
     payload = {
         "model": spec.payload_model,
         "messages": messages,
         "max_tokens": max_tokens or spec.max_tokens,
         "temperature": spec.temperature if temperature is None else temperature,
     }
+    if spec.provider == "watsonx":
+        # text/chat names the model `model_id` and needs a project or space
+        payload["model_id"] = payload.pop("model")
+        payload.update(_watsonx_scope())
 
     t0 = time.time()
-    log.info("-> %s (%d msgs, max_tokens=%d)",
-             spec.slug, len(messages), payload["max_tokens"])
+    log.info("-> [%s] %s (%d msgs, max_tokens=%d) url=%s",
+             backend, spec.slug, len(messages), payload["max_tokens"], url)
     _last_user = next((m.get("content") for m in reversed(messages)
                        if m.get("role") == "user"), "") or ""
     _body_log.info("--- request %s ---\n%s", spec.slug,
                    _last_user if isinstance(_last_user, str) else str(_last_user))
-    resp = _post_with_retry(url, {"RITS_API_KEY": api_key}, payload, timeout,
+    resp = _post_with_retry(url, headers, payload, timeout,
                             spec.slug)
     data = resp.json()
 
     msg = data["choices"][0]["message"]
     usage = data.get("usage") or {}
     finish = data["choices"][0].get("finish_reason")
-    log.info("<- %s %.1fs %d+%d tok finish=%s", spec.slug, time.time() - t0,
+    log.info("<- [%s] %s %.1fs %d+%d tok finish=%s", backend, spec.slug,
+             time.time() - t0,
              usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
              finish)
     if finish == "length":

@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 import config
 from intake import craft_plan
+from intake import edit_plan as intake_edit_plan
 from pipeline import generate_deck, retry_slide
 from refine import _rerender, apply_nl_edit
 from session import SlideSession
@@ -157,6 +158,17 @@ async def health() -> dict:
         "roster": {role: spec.slug for role, spec in config.ROSTER.items()},
         "icons": len(config.available_icons()),
         "rits_key_set": bool(os.environ.get("RITS_API_KEY")),
+        # false when every build role is on the CE fleet / watsonx
+        "rits_needed": bool(config.rits_roles()),
+        "backends": {role: config.spec_backend(spec)
+                     for role, spec in config.ROSTER.items()},
+        # where designer/coder actually go — the roster slug above stays the
+        # RITS one even when PALETTE_CE_BASE_URL redirects them
+        "designer_backend": config.PALETTE_ADAPTER.base_url or "rits",
+        "gpt_oss_120b_backend": (config.WATSONX_URL
+                                 if config.GPT_OSS_120B.provider == "watsonx"
+                                 else "rits"),
+        "available_models": config.available_models(),
     }
 
 
@@ -187,19 +199,13 @@ async def example(name: str):
     return {"name": name, "content": target.read_text()}
 
 
-@app.post("/build")
-async def build(req: BuildReq):
-    _session_id_var.set(req.thread_id)
-    plan = req.plan.strip()
-    if not plan:
-        return JSONResponse({"error": "empty plan"}, status_code=400)
+async def _run_build(req: BuildReq, session: SlideSession) -> dict:
+    """Run one deck build to completion and return the API payload.
 
-    session = _session(req.thread_id)
-    if session.building:
-        return JSONResponse({"error": "a build is already running"},
-                            status_code=409)
-    session.reset()
-    session.building = True
+    Shared by the blocking POST /build and the background POST /build_async
+    so the two can never drift apart. Mutates `session` the same way in both
+    cases; raises on failure, leaving the caller to shape the error response.
+    """
     t0 = time.time()
 
     def _progress(message: str, current: int, total: int) -> None:
@@ -208,7 +214,7 @@ async def build(req: BuildReq):
 
     def _run() -> dict:
         return generate_deck(
-            plan, session.out_dir,
+            req.plan.strip(), session.out_dir,
             deck_id=session.session_id[:12],
             palette_family=req.palette_family,
             progress=_progress,
@@ -221,12 +227,20 @@ async def build(req: BuildReq):
              req.designer_coder, req.critic)
     try:
         result = await asyncio.to_thread(_run)
-    except Exception as exc:  # noqa: BLE001 — surface any failure to the UI
+    # SystemExit, not just Exception: render.py signals missing prerequisites
+    # (node, pptxgenjs, LibreOffice) with SystemExit, which derives from
+    # BaseException. Escaping a background build task, it tears down the
+    # uvicorn event loop and takes the whole server with it -- one bad build
+    # killing the service for every session. Catch it here and report it as a
+    # failed build. KeyboardInterrupt/CancelledError are deliberately NOT
+    # swallowed: those mean the process really is shutting down.
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 — surfaced to the caller
         log.exception("build failed")
         session.building = False
+        session.last_error = str(exc)
         session.progress = {"stage": "error", "message": str(exc),
                             "current": 0, "total": 0}
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        raise
 
     session.deck = result["deck"]
     session.pptx_path = result["pptx"]
@@ -238,7 +252,7 @@ async def build(req: BuildReq):
     elapsed = time.time() - t0
     log.info("build thread=%s done: %d slides in %.1fs",
              req.thread_id, len(session.previews), elapsed)
-    return {
+    payload = {
         "slide_count": len(session.previews),
         "title": result["deck"].get("deck_title", ""),
         "elapsed": round(elapsed, 1),
@@ -247,9 +261,137 @@ async def build(req: BuildReq):
         "geometry": result.get("geometry", {}),
         "retries": result.get("retries", {}),
     }
+    session.last_result = payload
+    return payload
+
+
+def _begin_build(req: BuildReq) -> SlideSession | JSONResponse:
+    """Validate the request and put the session into the building state."""
+    if not req.plan.strip():
+        return JSONResponse({"error": "empty plan"}, status_code=400)
+    session = _session(req.thread_id)
+    if session.building:
+        return JSONResponse({"error": "a build is already running"},
+                            status_code=409)
+    session.reset()
+    session.building = True
+    return session
+
+
+@app.post("/build")
+async def build(req: BuildReq):
+    _session_id_var.set(req.thread_id)
+    session = _begin_build(req)
+    if isinstance(session, JSONResponse):
+        return session
+    try:
+        return await _run_build(req, session)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+# --- Background build ------------------------------------------------------
+# Same pipeline as POST /build, started as a task so the request returns at
+# once. Callers that cannot hold a connection open for the two-to-four minutes
+# a deck takes -- agent sandboxes that cap how long one step may run, or any
+# proxy with a request timeout -- poll /progress and then read /result.
+#
+# Strictly additive: /build is untouched in behaviour, and a client can detect
+# whether a deployment has these routes from /openapi.json.
+
+@app.post("/build_async")
+async def build_async(req: BuildReq):
+    _session_id_var.set(req.thread_id)
+    session = _begin_build(req)
+    if isinstance(session, JSONResponse):
+        return session
+
+    async def _task() -> None:
+        # The contextvar is per-task, so re-bind it here or this build's log
+        # records fail every session filter and land nowhere.
+        _session_id_var.set(req.thread_id)
+        try:
+            await _run_build(req, session)
+        # Nothing may escape a background task: an unretrieved exception is
+        # noisy, and a SystemExit escaping here shuts down the event loop.
+        # _run_build has already logged it and recorded it on the session,
+        # where /progress and /result will report it.
+        except (Exception, SystemExit):  # noqa: BLE001
+            pass
+
+    asyncio.create_task(_task())
+    log.info("build_async thread=%s accepted", req.thread_id)
+    return {"started": True, "thread_id": req.thread_id}
+
+
+@app.get("/result/{thread_id}")
+async def result(thread_id: str):
+    """Terminal outcome of a background build.
+
+    `stage` is "running" until the build ends, then "done" (with `result`) or
+    "error" (with `error`). Polling /progress gives the live detail.
+    """
+    _session_id_var.set(thread_id)
+    s = _registry.get(thread_id)
+    if s is None:
+        return JSONResponse({"error": "unknown thread_id"}, status_code=404)
+    if s.last_error is not None:
+        return {"stage": "error", "result": None, "error": s.last_error}
+    if s.last_result is not None:
+        return {"stage": "done", "result": s.last_result, "error": None}
+    return {"stage": "running" if s.building else str(s.progress.get("stage", "idle")),
+            "result": None, "error": None}
 
 
 # --- Stage 1 — intake ------------------------------------------------------
+
+async def _stage_sources(session: SlideSession, files: list[UploadFile]) -> list[Path]:
+    """Persist uploaded reference documents into the session's sources dir."""
+    src_paths: list[Path] = []
+    if not files:
+        return src_paths
+    srcdir = session.root / "sources"
+    srcdir.mkdir(parents=True, exist_ok=True)
+    for f in files:
+        if not f.filename:
+            continue
+        dest = srcdir / Path(f.filename).name
+        dest.write_bytes(await f.read())
+        src_paths.append(dest)
+    return src_paths
+
+
+async def _run_draft(request: str, planner: str, src_paths: list[Path],
+                     session: SlideSession) -> dict:
+    """Run Stage 1 to completion and return the API payload.
+
+    Shared by the blocking POST /draft and the background POST /draft_async.
+    Raises on failure, recording the reason on the session first.
+    """
+    config.apply_models(planner=planner)
+    log.info("draft thread=%s sources=%d request=%r",
+             session.session_id, len(src_paths), request[:80])
+    session.progress = {"stage": "draft", "message": "crafting plan",
+                        "current": 0, "total": 0}
+    try:
+        plan = await asyncio.to_thread(craft_plan, request, src_paths)
+    # SystemExit as well as Exception: intake shells out for document parsing,
+    # and an escaping SystemExit would kill the event loop from a background
+    # task -- the same failure mode that took the server down during a build.
+    except (Exception, SystemExit) as exc:  # noqa: BLE001
+        log.exception("draft failed")
+        session.drafting = False
+        session.last_draft_error = str(exc)
+        session.progress = {"stage": "error", "message": str(exc),
+                            "current": 0, "total": 0}
+        raise
+
+    session.drafting = False
+    session.last_plan = plan
+    session.progress = {"stage": "draft_done", "message": "plan ready",
+                        "current": 0, "total": 0}
+    return {"plan": plan, "sources": [p.name for p in src_paths]}
+
 
 @app.post("/draft")
 async def draft(request: str = Form(...), thread_id: str = Form("default"),
@@ -259,28 +401,111 @@ async def draft(request: str = Form(...), thread_id: str = Form("default"),
     request = request.strip()
     if not request:
         return JSONResponse({"error": "empty request"}, status_code=400)
-    config.apply_models(planner=planner)
     session = _session(thread_id)
-
-    src_paths: list[Path] = []
-    if files:
-        srcdir = session.root / "sources"
-        srcdir.mkdir(exist_ok=True)
-        for f in files:
-            if not f.filename:
-                continue
-            dest = srcdir / Path(f.filename).name
-            dest.write_bytes(await f.read())
-            src_paths.append(dest)
-
-    log.info("draft thread=%s sources=%d request=%r",
-             thread_id, len(src_paths), request[:80])
+    src_paths = await _stage_sources(session, files)
     try:
-        plan = await asyncio.to_thread(craft_plan, request, src_paths)
+        return await _run_draft(request, planner, src_paths, session)
     except Exception as exc:  # noqa: BLE001
-        log.exception("draft failed")
         return JSONResponse({"error": str(exc)}, status_code=500)
-    return {"plan": plan, "sources": [p.name for p in src_paths]}
+
+
+# Stage 1 in the background. Crafting a plan from reference documents takes
+# 60-90s -- longer than the per-step limit an agent sandbox allows -- so the
+# same start/poll/collect shape as /build_async applies here. Feature-detected
+# via /openapi.json, so older deployments simply keep using blocking /draft.
+
+@app.post("/draft_async")
+async def draft_async(request: str = Form(...), thread_id: str = Form("default"),
+                      planner: str = Form("gpt-oss-120b"),
+                      files: list[UploadFile] = File(default=[])):
+    _session_id_var.set(thread_id)
+    request = request.strip()
+    if not request:
+        return JSONResponse({"error": "empty request"}, status_code=400)
+    session = _session(thread_id)
+    if session.drafting:
+        return JSONResponse({"error": "a draft is already running"}, status_code=409)
+    # Uploads must be read before returning: the request body is gone once the
+    # response is sent, so staging them inside the task would read a closed file.
+    src_paths = await _stage_sources(session, files)
+    session.drafting = True
+    session.last_plan = None
+    session.last_draft_error = None
+
+    async def _task() -> None:
+        _session_id_var.set(thread_id)
+        try:
+            await _run_draft(request, planner, src_paths, session)
+        except (Exception, SystemExit):  # noqa: BLE001 — recorded on the session
+            pass
+
+    asyncio.create_task(_task())
+    log.info("draft_async thread=%s accepted (%d source(s))", thread_id, len(src_paths))
+    return {"started": True, "thread_id": thread_id, "sources": [p.name for p in src_paths]}
+
+
+@app.get("/draft_result/{thread_id}")
+async def draft_result(thread_id: str):
+    """Terminal outcome of a background draft: the plan, or the error."""
+    _session_id_var.set(thread_id)
+    s = _registry.get(thread_id)
+    if s is None:
+        return JSONResponse({"error": "unknown thread_id"}, status_code=404)
+    if s.last_draft_error is not None:
+        return {"stage": "error", "plan": None, "error": s.last_draft_error}
+    if s.last_plan is not None:
+        return {"stage": "done", "plan": s.last_plan, "error": None}
+    return {"stage": "running" if s.drafting else "idle", "plan": None, "error": None}
+
+
+class EditPlanReq(BaseModel):
+    plan: str
+    instruction: str
+    thread_id: str = "default"
+    planner: str = "gpt-oss-120b"
+
+
+@app.post("/edit_plan_async")
+async def edit_plan_async(req: EditPlanReq):
+    """Revise a plan in the background; collect it from /draft_result.
+
+    The HTTP form of `palette.py edit-plan` (same `intake.edit_plan`), used by
+    the skill's remote mode. It records its result exactly where a draft does
+    — `last_plan` / `last_draft_error` — so one poll endpoint serves both.
+    """
+    _session_id_var.set(req.thread_id)
+    if not req.plan.strip() or not req.instruction.strip():
+        return JSONResponse({"error": "plan and instruction are required"}, status_code=400)
+    session = _session(req.thread_id)
+    if session.drafting:
+        return JSONResponse({"error": "a draft is already running"}, status_code=409)
+    session.drafting = True
+    session.last_plan = None
+    session.last_draft_error = None
+
+    async def _task() -> None:
+        _session_id_var.set(req.thread_id)
+        config.apply_models(planner=req.planner)
+        session.progress = {"stage": "draft", "message": "revising plan",
+                            "current": 0, "total": 0}
+        try:
+            plan = await asyncio.to_thread(intake_edit_plan, req.plan, req.instruction)
+        # Nothing may escape a background task (see build_async).
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 — recorded on the session
+            log.exception("edit_plan failed")
+            session.drafting = False
+            session.last_draft_error = str(exc)
+            session.progress = {"stage": "error", "message": str(exc),
+                                "current": 0, "total": 0}
+            return
+        session.drafting = False
+        session.last_plan = plan
+        session.progress = {"stage": "draft_done", "message": "plan ready",
+                            "current": 0, "total": 0}
+
+    asyncio.create_task(_task())
+    log.info("edit_plan_async thread=%s accepted", req.thread_id)
+    return {"started": True, "thread_id": req.thread_id}
 
 
 # --- Stage 3 — refine ------------------------------------------------------
@@ -437,9 +662,12 @@ def main() -> None:
     args = p.parse_args()
     port = int(os.environ.get("PORT") or args.port or 18814)
 
-    config.WORKSPACE.mkdir(exist_ok=True)
-    if not os.environ.get("RITS_API_KEY"):
-        log.warning("RITS_API_KEY not set — builds will fail until exported.")
+    # parents=True: PALETTE_WORKSPACE may point somewhere nested that does not
+    # exist yet (e.g. ~/.local/state/palette/workspace under a service).
+    config.WORKSPACE.mkdir(parents=True, exist_ok=True)
+    if config.rits_roles() and not os.environ.get("RITS_API_KEY"):
+        log.warning("RITS_API_KEY not set — %s route to RITS, so builds will "
+                    "fail until it is exported.", ", ".join(config.rits_roles()))
     log.info("icons: %d   roster: %s", len(config.available_icons()),
              {role: spec.slug for role, spec in config.ROSTER.items()})
     print(f"\n  Palette  ->  http://127.0.0.1:{port}\n")

@@ -1,14 +1,12 @@
----
-name: palette
-description: >-
-  Create, revise, and render slide decks (PowerPoint .pptx) from a
-  natural-language request or pasted material. Use whenever the user wants to
-  build a presentation / deck / slides, turn notes or content into slides, or
-  change a deck. Works in two reviewable steps — a markdown plan the user
-  approves, then a rendered .pptx.
----
+# Palette CLI — `palette.py`
 
-# Palette — slide deck builder
+For a person at a terminal. **Agents use the skill instead** —
+[`skills/palette`](../skills/palette/README.md) — which fronts these commands with
+`deck.py` so long builds survive step limits. Both drive the same functions.
+
+(This file used to be `SKILL.md` at the repo root. It moved because skill
+installers such as `npx skills add` treat a root `SKILL.md` as *the* skill and
+stop looking, which hid `skills/palette`.)
 
 Palette turns a request (or pasted material) into a rendered slide deck in two
 reviewable steps:
@@ -22,10 +20,22 @@ minutes, so you don't want to build from an unapproved plan.
 
 ## Commands
 
-Run these from the Palette harness directory (where `palette.py` lives), with
-the harness environment configured (model access via `RITS_API_KEY`). Each
+Run these from the Palette harness directory (where `palette.py` lives). Each
 command prints its result to stdout and, on failure, prints `error: ...` and
 exits non-zero — relay that message to the user.
+
+Two environment variables have to be set, and a missing one is not obvious
+from the failure it causes:
+
+| Variable | Why |
+|---|---|
+| `RITS_API_KEY` | every model call. Without it, each command fails at the first one |
+| `PALETTE_HOME` | the checkout holding `palette.py`. Not needed here, where you are already in it, but the packaged skill (`skills/palette/`) shells in from elsewhere and cannot guess it |
+
+```bash
+export PALETTE_HOME=/path/to/project-palette
+export RITS_API_KEY=<key>
+```
 
 ### 1. Create a plan
 ```
