@@ -289,6 +289,13 @@ AUTO_GEOMETRY_PASS = os.environ.get("DECK_FORGE_AUTO_GEOMETRY_PASS", "1") != "0"
 # pass replaced it. This flag is retained for when the VLM pass is revisited.
 AUTO_VISUAL_PASS = os.environ.get("DECK_FORGE_AUTO_VISUAL_PASS", "0") != "0"
 
+# Keep-warm: RITS scales an idle deployment down, and the next request then
+# waits ~5 min for a cold start (observed 2026-10-30 on the palette adapter).
+# While the server runs, a background task sends the designer/coder model a
+# 1-token ping every this-many minutes, skipped when a real call answered more
+# recently. 0 disables it.
+KEEPWARM_MINUTES = float(os.environ.get("PALETTE_KEEPWARM_MINUTES", "5"))
+
 # RITS request retries on transient failures (timeout / 429 / 5xx). RITS
 # models — Qwen-VL especially — overload intermittently.
 RITS_RETRIES = int(os.environ.get("DECK_FORGE_RITS_RETRIES", "3"))

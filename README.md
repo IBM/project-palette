@@ -24,7 +24,7 @@ You can:
 
 - **Draft from a request** ("Build a deck about RAG architectures for engineers")
 - **Attach reference docs** (PDF, DOCX, PPTX, Markdown) and have them shape the plan
-- **Start from an example plan** that ships with the repo
+- **Click an example prompt** for a short deck in a couple of minutes
 - **Edit the plan freely** as Markdown, then build/regenerate
 - **Retry individual slides** that came out poorly, or **type instructions** to refine one specifically
 - **Download the `.pptx`** when you're satisfied
@@ -120,7 +120,7 @@ Open the URL. You should see the Palette UI — a chat composer on the left, a d
 
 1. **Describe what you want** in the composer at the bottom (e.g. *"Build a deck explaining vector databases to backend engineers"*) and hit Send.
 2. **Attach reference files** via the 📎 button next to the composer, then describe how to use them.
-3. **Start from an example plan** — click that button to pick from `reference_plans/` (RAG, all-hands, etc.). Loads a pre-built plan you can edit.
+3. **Click an example prompt** — each one asks for a short (3-slide) deck, so it drafts and builds quickly.
 
 **Plan editing.** Once a plan exists it shows as rendered Markdown in the chat thread. Click **Edit** in the plan card's header to switch to a textarea, make changes, and click **Done**. Then click **Build deck** (the orange button at the bottom of the plan card).
 
@@ -137,7 +137,6 @@ Open the URL. You should see the Palette UI — a chat composer on the left, a d
 
 **Other controls in the header:**
 
-- **⚙ Models** — pick the model for each pipeline stage (planner / designer + coder / critic). Defaults are sensible.
 - **Tips** — opens an in-app cheat sheet of all the above
 - **Load plan** — load any `.md` file as a plan directly, skipping the planner
 - **New** — start a fresh session
@@ -203,6 +202,7 @@ including the Code Engine deployment settings).
 | `GPT_OSS_120B_PROVIDER` | no | — (RITS) | `watsonx` sends gpt-oss-120b (crafter, editor) to watsonx.ai |
 | `WATSONX_APIKEY` / `WATSONX_PROJECT_ID` (or `WATSONX_SPACE_ID`) / `WATSONX_URL` | with watsonx | URL `https://us-south.ml.cloud.ibm.com` | watsonx.ai credentials; only us-south hosts gpt-oss-120b |
 | `RITS_API_KEY` | if any role still uses RITS | — | Bearer token for RITS. `/health` → `rits_needed` says whether it is required |
+| `PALETTE_KEEPWARM_MINUTES` | no | `5` | While the server runs, ping the designer/coder model with a 1-token request this often so RITS doesn't scale it down (a cold start costs ~5 min). Skipped when real traffic was more recent. `0` disables. Status under `/health` → `keepwarm` |
 | `PORT` | no | `18814` | Bind port. Useful in container deployments where the platform injects a port. |
 | `RITS_BASE_URL` | no | (set in `config.py`) | Override only if pointing at a non-default RITS endpoint. |
 

@@ -23,6 +23,11 @@ log = logging.getLogger("llm")
 # (never stderr — too verbose). See app.py's logging setup.
 _body_log = logging.getLogger("llm.responses")
 
+# payload_model -> time.monotonic() of its last successful completion. Lets
+# the app's keep-warm loop skip a ping when real traffic already kept the
+# model warm.
+last_success: dict[str, float] = {}
+
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 
@@ -156,6 +161,7 @@ def chat(spec: config.ModelSpec, messages: list[dict], *,
         log.warning("%s hit the max_tokens ceiling — output may be truncated",
                     spec.slug)
 
+    last_success[spec.payload_model] = time.monotonic()
     content = msg.get("content") or ""
     reasoning = msg.get("reasoning") or msg.get("reasoning_content") or ""
     _body_log.info("--- response %s ---\n%s", spec.slug, content)

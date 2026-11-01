@@ -48,21 +48,6 @@ header .logo{width:40px;height:40px;flex:0 0 auto;display:block;
   margin-right:-2px}
 header .tag{font-size:13px;color:var(--muted)}
 .spacer{flex:1}
-.settings-pop{position:absolute;top:100%;right:22px;margin-top:7px;
-  width:300px;background:var(--surface);border:1px solid var(--border);
-  border-radius:11px;
-  box-shadow:0 14px 40px rgba(40,36,28,.16),0 2px 6px rgba(40,36,28,.08);
-  padding:14px 16px 12px;z-index:30}
-.settings-pop h4{font-size:11px;font-weight:650;letter-spacing:.05em;
-  color:var(--muted);margin:0 0 10px}
-.settings-pop label{display:flex;flex-direction:column;gap:4px;
-  font-size:11px;color:var(--muted);text-transform:uppercase;
-  letter-spacing:.04em;margin-bottom:10px;font-weight:600}
-.settings-pop label:last-child{margin-bottom:0}
-.settings-pop select{font-size:13px;padding:6px 9px;text-transform:none;
-  letter-spacing:normal;font-weight:400;color:var(--text)}
-.settings-pop .hint{font-size:11px;color:var(--muted);margin-top:8px;
-  font-weight:400;text-transform:none;letter-spacing:normal;font-style:italic}
 .chip{font-size:11px;color:var(--muted);background:var(--sunk);
   border:1px solid var(--border);border-radius:20px;padding:3px 10px}
 button{font-family:inherit;cursor:pointer;border-radius:8px;font-size:13px}
@@ -109,23 +94,10 @@ main{display:grid;grid-template-columns:var(--left-w,480px) 6px 1fr;
   margin:0 auto 26px;max-width:520px}
 .ex-card{background:var(--surface);border:1px solid var(--border);
   border-radius:9px;padding:11px 14px;font-size:13px;color:var(--text);
-  line-height:1.45;display:flex;align-items:flex-start;gap:9px}
+  line-height:1.45;display:flex;align-items:flex-start;gap:9px;
+  font-family:inherit;text-align:left;cursor:pointer;width:100%}
+.ex-card:hover{background:var(--sunk);border-color:var(--accent)}
 .ex-card .ex-quote{flex:1;font-style:italic}
-.ex-card .ex-attach{flex:0 0 auto;color:var(--muted);font-size:12px;
-  margin-top:1px}
-.or-divider{display:flex;align-items:center;gap:14px;
-  color:var(--muted);font-size:12px;letter-spacing:.08em;
-  text-transform:uppercase;margin:6px 0 14px}
-.or-divider::before,.or-divider::after{content:'';flex:1;height:1px;
-  background:var(--border)}
-.ex-list{margin-top:12px;display:none;flex-direction:column;gap:5px;
-  text-align:left;max-width:380px;margin-left:auto;margin-right:auto}
-.ex-list.open{display:flex}
-.ex-list button{background:var(--surface);border:1px solid var(--border);
-  color:var(--text);font-size:13px;padding:8px 12px;border-radius:7px;
-  text-align:left;display:flex;align-items:center;gap:8px}
-.ex-list button::before{content:'📄';opacity:.7;font-size:13px}
-.ex-list button:hover{background:var(--sunk);border-color:var(--accent)}
 
 /* ---- plan card ---- */
 .plan{align-self:stretch;background:var(--surface);
@@ -277,32 +249,6 @@ select{font-family:inherit;font-size:12px;padding:5px 8px;border-radius:7px;
   <h1>Palette</h1>
   <span class="tag">request &rarr; plan &rarr; deck</span>
   <div class="spacer"></div>
-  <button class="btn ghost" id="modelsBtn" onclick="toggleSettings(event)"
-    title="Pick the model for each pipeline stage">⚙ Models</button>
-  <div class="settings-pop" id="settingsPop" hidden>
-    <h4>MODEL ROSTER</h4>
-    <label>Planner
-      <select id="mPlanner">
-        <option value="gpt-oss-120b">gpt-oss-120b</option>
-        <option value="llama-3.3-70b">Llama-3.3-70B</option>
-      </select></label>
-    <label>Designer + Coder
-      <select id="mDesigner">
-        <option value="palette-qwen-32b">Palette LoRA (Qwen2.5-Coder-32B)</option>
-        <option value="palette-gpt-20b">Palette LoRA (gpt-oss-20b)</option>
-        <option value="gpt-oss-120b">gpt-oss-120b</option>
-        <option value="llama-3.3-70b">Llama-3.3-70B</option>
-      </select></label>
-    <label>Critic
-      <select id="mCritic">
-        <option value="gpt-oss-120b">gpt-oss-120b</option>
-        <option value="qwen2.5-coder-32b">Qwen2.5-Coder-32B (base)</option>
-        <option value="llama-3.3-70b">Llama-3.3-70B</option>
-        <option value="palette-qwen-32b">Palette LoRA (Qwen2.5-Coder-32B) — experimental</option>
-        <option value="palette-gpt-20b">Palette LoRA (gpt-oss-20b) — experimental</option>
-      </select></label>
-    <div class="hint">Changes apply to your next build.</div>
-  </div>
   <button class="btn ghost" id="tipsBtn" onclick="toggleTips(event)">
     Tips</button>
   <div class="tips-pop" id="tipsPop" hidden>
@@ -386,6 +332,18 @@ let attachedFiles = []
 const $ = id => document.getElementById(id)
 const messages = $('messages')
 
+// Click-to-run starters. Kept short with an explicit slide count so a
+// first-time user gets a finished deck in a couple of minutes.
+const EXAMPLE_PROMPTS = [
+  'A 3-slide intro to retrieval-augmented generation (RAG) for engineers new to it.',
+  'A 3-slide explainer of our on-call rotation: weekly shifts, a primary and a backup engineer, and handoff every Monday at 10am.',
+]
+
+function useExample(i) {
+  if (busy) return
+  draft(EXAMPLE_PROMPTS[i])
+}
+
 function renderEmpty() {
   messages.innerHTML =
     '<div class="empty" id="empty">' +
@@ -394,39 +352,11 @@ function renderEmpty() {
     'reference documents (PDF, DOCX, PPTX, MD). Palette will draft a plan ' +
     'you can edit, then turn it into a deck.</p>' +
     '<div class="ex-cards">' +
-      '<div class="ex-card"><span class="ex-quote">' +
-        '"Build a deck to teach someone about RAG architectures."' +
-        '</span></div>' +
-      '<div class="ex-card"><span class="ex-quote">' +
-        '"Extract and summarize my experiment results into a presentation."' +
-        '</span><span class="ex-attach">📎 attach results</span></div>' +
+      EXAMPLE_PROMPTS.map((t, i) =>
+        '<button class="ex-card" onclick="useExample(' + i + ')">' +
+        '<span class="ex-quote">"' + t + '"</span></button>').join('') +
     '</div>' +
-    '<div class="or-divider">or</div>' +
-    '<button class="btn ghost" onclick="toggleExamples()" id="exBtn">' +
-      'Start from an example plan' +
-    '</button>' +
-    '<div class="ex-list" id="exList"></div>' +
     '</div>'
-}
-
-async function toggleExamples() {
-  const el = $('exList')
-  el.classList.toggle('open')
-  if (el.dataset.loaded) return
-  el.dataset.loaded = '1'
-  try {
-    const r = await fetch('/examples')
-    const d = await r.json()
-    // /examples now returns {file, label} objects so the button shows
-    // a human-readable title (e.g. "Engineering All-Hands") and loads
-    // the underlying .md by its real name.
-    for (const ex of d.examples || []) {
-      const b = document.createElement('button')
-      b.textContent = ex.label
-      b.onclick = () => loadExample(ex.file)
-      el.appendChild(b)
-    }
-  } catch (e) {}
 }
 
 function growInput(t) {
@@ -541,7 +471,6 @@ async function draft(request) {
   const fd = new FormData()
   fd.append('request', request)
   fd.append('thread_id', TID)
-  fd.append('planner', $('mPlanner').value)
   for (const f of attachedFiles) fd.append('files', f)
   // Snapshot the names BEFORE we clear, so the plan card can render them
   // as a sources strip even after the array is reset.
@@ -567,17 +496,6 @@ async function draft(request) {
       status.textContent = 'Error: ' + err.message
     }
   } finally { setBusy(false); currentAbort = null }
-}
-
-function loadExample(name) {
-  fetch('/example/' + encodeURIComponent(name))
-    .then(r => r.json())
-    .then(d => {
-      addMsg('user', 'Example: ' + name)
-      addMsg('bot', 'Loaded the example plan — review and edit, then Build.')
-      addPlanCard(d.content || '')
-      mode = 'plan'
-    }).catch(() => {})
 }
 
 // Load plan directly from any .md file on disk — bypasses the crafter
@@ -704,9 +622,7 @@ async function buildDeck(card) {
   try {
     const r = await fetch('/build_async', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ plan, thread_id: TID, palette_family: palette,
-        planner: $('mPlanner').value, designer_coder: $('mDesigner').value,
-        critic: $('mCritic').value }),
+      body: JSON.stringify({ plan, thread_id: TID, palette_family: palette }),
       signal: currentAbort.signal
     })
     const started = await r.json()
@@ -867,20 +783,12 @@ function downloadDeck() { window.location = '/download/' + TID }
 function toggleTips(ev) {
   if (ev) ev.stopPropagation()
   $('tipsPop').hidden = !$('tipsPop').hidden
-  $('settingsPop').hidden = true   // popovers are mutually exclusive
-}
-
-function toggleSettings(ev) {
-  if (ev) ev.stopPropagation()
-  $('settingsPop').hidden = !$('settingsPop').hidden
-  $('tipsPop').hidden = true
 }
 
 // Dismiss any open popover on click-outside or Escape. One handler covers
 // both since they share the same dismiss semantics.
 document.addEventListener('click', (ev) => {
-  for (const [popId, btnId] of [['tipsPop','tipsBtn'],
-                                  ['settingsPop','modelsBtn']]) {
+  for (const [popId, btnId] of [['tipsPop','tipsBtn']]) {
     const pop = $(popId), btn = $(btnId)
     if (!pop || pop.hidden) continue
     if (pop.contains(ev.target) || (btn && btn.contains(ev.target))) continue
@@ -890,7 +798,6 @@ document.addEventListener('click', (ev) => {
 document.addEventListener('keydown', (ev) => {
   if (ev.key !== 'Escape') return
   $('tipsPop').hidden = true
-  $('settingsPop').hidden = true
 })
 
 // Called when the <input type="file"> picker resolves. Append the picked
@@ -954,26 +861,6 @@ document.addEventListener('keydown', e => {
 })
 
 renderEmpty()
-fetch('/health').then(r => r.json()).then(h => {
-  if (h && h.roster) $('modelChip').textContent = 'designer: ' + h.roster.designer
-  // Grey out menu entries whose backend is not configured here (e.g. RITS
-  // models on a deployment with no RITS key); keep a usable selection.
-  const avail = h && h.available_models
-  if (!avail) return
-  for (const [id, menu] of [['mPlanner', 'planner'], ['mDesigner', 'designer'],
-                            ['mCritic', 'correction']]) {
-    const sel = $(id), ok = new Set(avail[menu] || [])
-    if (!sel || !ok.size) continue
-    for (const opt of sel.options) {
-      opt.disabled = !ok.has(opt.value)
-      if (opt.disabled) opt.title = 'not configured on this server'
-    }
-    if (sel.selectedOptions[0] && sel.selectedOptions[0].disabled) {
-      const first = [...sel.options].find(o => !o.disabled)
-      if (first) sel.value = first.value
-    }
-  }
-}).catch(() => {})
 
 ;(function setupDivider() {
   const d = $('divider'); if (!d) return

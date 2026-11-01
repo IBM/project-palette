@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import contextvars
 import logging
+from contextlib import asynccontextmanager
 import os
 import shutil
 import time
@@ -25,6 +26,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 import config
+import llm
 from intake import craft_plan
 from intake import edit_plan as intake_edit_plan
 from pipeline import generate_deck, retry_slide
@@ -130,7 +132,69 @@ class BuildReq(BaseModel):
     critic: str = "gpt-oss-120b"
 
 
-app = FastAPI(title="Palette", docs_url=None, redoc_url=None)
+# --- keep-warm ----------------------------------------------------------------
+# RITS scales an idle deployment down and the next request waits ~5 min for a
+# cold start. While the server runs, ping the designer/coder model with a
+# 1-token request every KEEPWARM_MINUTES — any request resets RITS's idle
+# timer, so there is no need to generate a real slide. Pinging the adapter's
+# payload_model (not the base) also keeps the LoRA weights loaded.
+_keepwarm: dict = {"enabled": config.KEEPWARM_MINUTES > 0,
+                   "interval_min": config.KEEPWARM_MINUTES,
+                   "last_ping_at": None, "last_ping_s": None, "last_error": None}
+# A healthy ping answers in well under a second; anything slower means it
+# caught a cold start (or RITS is struggling).
+_KEEPWARM_SLOW_S = 10.0
+
+
+def _keepwarm_ping() -> None:
+    spec = config.ROSTER["designer"]
+    if not config.spec_usable(spec):
+        return
+    t0 = time.monotonic()
+    try:
+        llm.chat(spec, [{"role": "user", "content": "hi"}],
+                 max_tokens=1, temperature=0.0, timeout=120)
+    except Exception as exc:  # noqa: BLE001 — logged, retried next interval
+        _keepwarm["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
+        log.warning("keep-warm: %s did not answer (%s) — cold start or outage",
+                    spec.payload_model, _keepwarm["last_error"])
+        return
+    took = time.monotonic() - t0
+    _keepwarm.update(last_ping_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+                     last_ping_s=round(took, 2), last_error=None)
+    if took > _KEEPWARM_SLOW_S:
+        log.warning("keep-warm: %s answered in %.0fs — it was cold",
+                    spec.payload_model, took)
+    else:
+        log.info("keep-warm: %s ok in %.1fs", spec.payload_model, took)
+
+
+async def _keepwarm_loop() -> None:
+    interval = config.KEEPWARM_MINUTES * 60
+    while True:
+        model = config.ROSTER["designer"].payload_model
+        idle = time.monotonic() - llm.last_success.get(model, float("-inf"))
+        if idle >= interval:
+            await asyncio.to_thread(_keepwarm_ping)
+            await asyncio.sleep(interval)
+        else:
+            # Real traffic answered recently; check again when it would go stale.
+            await asyncio.sleep(interval - idle)
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    task = None
+    if config.KEEPWARM_MINUTES > 0:
+        log.info("keep-warm: pinging %s every %g min",
+                 config.ROSTER["designer"].payload_model, config.KEEPWARM_MINUTES)
+        task = asyncio.create_task(_keepwarm_loop())
+    yield
+    if task:
+        task.cancel()
+
+
+app = FastAPI(title="Palette", docs_url=None, redoc_url=None, lifespan=_lifespan)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -169,6 +233,7 @@ async def health() -> dict:
                                  if config.GPT_OSS_120B.provider == "watsonx"
                                  else "rits"),
         "available_models": config.available_models(),
+        "keepwarm": _keepwarm,
     }
 
 
