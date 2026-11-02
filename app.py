@@ -12,6 +12,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextvars
+import csv
+import hmac
+import io
 import logging
 from contextlib import asynccontextmanager
 import os
@@ -21,17 +24,19 @@ from pathlib import Path
 from threading import Lock
 
 import uvicorn
-from fastapi import FastAPI, File, Form, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 import config
 import llm
+import usage
 from intake import craft_plan
 from intake import edit_plan as intake_edit_plan
 from pipeline import generate_deck, retry_slide
 from refine import _rerender, apply_nl_edit
 from session import SlideSession
+from stats_ui import STATS_HTML
 from ui import HTML
 
 # Per-session logging
@@ -45,6 +50,12 @@ from ui import HTML
 
 _session_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "palette_session_id", default=None)
+
+
+def _bind_session(thread_id: str) -> None:
+    """Route this request's logs to its session, and tag its usage record."""
+    _session_id_var.set(thread_id)
+    usage.note_thread(thread_id)
 
 
 class _SessionLogFilter(logging.Filter):
@@ -81,6 +92,11 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 log = logging.getLogger("app")
 
 _registry: dict[str, SlideSession] = {}
+# Usage-tracking links, per thread: the latest plan's id (a build points at
+# the plan it came from) and the latest build's id (edits/retries point at it,
+# and refresh its archived deck). See usage.py.
+_plan_ids: dict[str, int | None] = {}
+_build_ids: dict[str, int | None] = {}
 _registry_lock = Lock()
 
 
@@ -184,6 +200,7 @@ async def _keepwarm_loop() -> None:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    usage.init()
     task = None
     if config.KEEPWARM_MINUTES > 0:
         log.info("keep-warm: pinging %s every %g min",
@@ -197,9 +214,117 @@ async def _lifespan(_app: FastAPI):
 app = FastAPI(title="Palette", docs_url=None, redoc_url=None, lifespan=_lifespan)
 
 
+# --- usage tracking -----------------------------------------------------------
+# Every POST (the actions: draft, build, edit, retry, …) and every download is
+# written to the local SQLite db (usage.py). Polling GETs are not — they would
+# drown the signal. The endpoints add the utterance text and build outcomes.
+
+def _tracked(request: Request) -> bool:
+    path = request.url.path
+    if path.startswith("/stats"):
+        return False
+    return request.method == "POST" or path.startswith("/download/")
+
+
+@app.middleware("http")
+async def _usage_mw(request: Request, call_next):
+    if not _tracked(request):
+        return await call_next(request)
+    who = usage.identify(request)
+    t0 = time.time()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        usage.record_request(who, request.method, request.url.path, status,
+                             int((time.time() - t0) * 1000))
+
+
 @app.get("/", response_class=HTMLResponse)
-async def index() -> HTMLResponse:
-    return HTMLResponse(HTML)
+async def index(request: Request) -> HTMLResponse:
+    response = HTMLResponse(HTML)
+    # An anonymous per-browser id, so the stats page can tell users apart.
+    if not request.cookies.get(usage.COOKIE):
+        response.set_cookie(usage.COOKIE, usage.new_uid(), max_age=usage.COOKIE_MAX_AGE,
+                            httponly=True, samesite="lax")
+    return response
+
+
+# --- /stats: the usage dashboard ------------------------------------------------
+# Secret: answers only with ?token=<PALETTE_STATS_TOKEN>. Without the token, or
+# with none configured, it is a plain 404, indistinguishable from no route.
+# Hidden from /openapi.json for the same reason.
+
+def _stats_ok(request: Request) -> bool:
+    want = os.environ.get("PALETTE_STATS_TOKEN", "")
+    got = request.query_params.get("token", "")
+    return bool(want) and hmac.compare_digest(got.encode(), want.encode())
+
+
+_NOT_FOUND = JSONResponse({"detail": "Not Found"}, status_code=404)
+# The token rides in the URL: never send it on as a Referer.
+_STATS_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+
+
+def _csv_safe(value):
+    """Defuse spreadsheet formulas in user-typed text (CSV injection): a cell
+    starting with = + - @ would run as a formula when opened in Excel."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
+
+@app.get("/stats", include_in_schema=False)
+async def stats_page(request: Request):
+    if not _stats_ok(request):
+        return _NOT_FOUND
+    return HTMLResponse(STATS_HTML, headers=_STATS_HEADERS)
+
+
+@app.get("/stats/api", include_in_schema=False)
+async def stats_api(request: Request, days: int = 30):
+    if not _stats_ok(request):
+        return _NOT_FOUND
+    data = await asyncio.to_thread(usage.summary, max(1, min(days, 365)))
+    return JSONResponse(data, headers=_STATS_HEADERS)
+
+
+@app.get("/stats/deck/{build_id}/{name}", include_in_schema=False)
+async def stats_deck(request: Request, build_id: int, name: str):
+    """An archived deck's files: deck.pptx, plan.md, slide-NN.png."""
+    if not _stats_ok(request):
+        return _NOT_FOUND
+    path = await asyncio.to_thread(usage.deck_file, build_id, name)
+    if path is None:
+        return _NOT_FOUND
+    if name == "deck.pptx":
+        return FileResponse(path, filename=f"palette-build-{build_id}.pptx", media_type=(
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"))
+    media = "image/png" if name.endswith(".png") else "text/markdown; charset=utf-8"
+    return FileResponse(path, media_type=media, headers={"Cache-Control": "private, max-age=300"})
+
+
+@app.get("/stats/utterances.csv", include_in_schema=False)
+async def stats_csv(request: Request):
+    if not _stats_ok(request):
+        return _NOT_FOUND
+    rows = await asyncio.to_thread(usage.query,
+        "SELECT ts, kind, text, slide_n, sources, thread_id, uid, visitor, client "
+        "FROM utterances ORDER BY ts DESC")
+    buf = io.StringIO()
+    out = csv.writer(buf)
+    out.writerow(["time_utc", "kind", "text", "slide_n", "sources",
+                  "thread_id", "uid", "visitor", "client"])
+    for r in rows:
+        out.writerow([_csv_safe(v) for v in (
+            time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(r["ts"])), r["kind"],
+            r["text"], r["slide_n"], r["sources"], r["thread_id"],
+            r["uid"], r["visitor"], r["client"])])
+    return Response(buf.getvalue(), media_type="text/csv", headers={
+        "Content-Disposition": 'attachment; filename="palette-utterances.csv"',
+        **_STATS_HEADERS})
 
 
 @app.get("/asset/{name}")
@@ -222,6 +347,7 @@ async def health() -> dict:
         "roster": {role: spec.slug for role, spec in config.ROSTER.items()},
         "icons": len(config.available_icons()),
         "rits_key_set": bool(os.environ.get("RITS_API_KEY")),
+        "data": usage.locations(),
         # false when every build role is on the CE fleet / watsonx
         "rits_needed": bool(config.rits_roles()),
         "backends": {role: config.spec_backend(spec)
@@ -286,6 +412,9 @@ async def _run_build(req: BuildReq, session: SlideSession) -> dict:
         )
 
     config.apply_models(req.planner, req.designer_coder, req.critic)
+    build_id = _build_ids[req.thread_id] = usage.start_build(
+        req.thread_id, req.plan, req.palette_family, started_at=t0,
+        plan_id=_plan_ids.get(req.thread_id), models=_models(req))
     log.info("=" * 60)
     log.info("build thread=%s palette=%s  models=[plan %s | design %s | "
              "critic %s]", req.thread_id, req.palette_family, req.planner,
@@ -301,6 +430,7 @@ async def _run_build(req: BuildReq, session: SlideSession) -> dict:
     # swallowed: those mean the process really is shutting down.
     except (Exception, SystemExit) as exc:  # noqa: BLE001 — surfaced to the caller
         log.exception("build failed")
+        usage.finish_build(build_id, ok=False, started_at=t0, error=str(exc))
         session.building = False
         session.last_error = str(exc)
         session.progress = {"stage": "error", "message": str(exc),
@@ -327,7 +457,19 @@ async def _run_build(req: BuildReq, session: SlideSession) -> dict:
         "retries": result.get("retries", {}),
     }
     session.last_result = payload
+    # Also archives the deck to data/decks/ — the workspace copy does not
+    # survive "New" or a container rebuild.
+    await asyncio.to_thread(
+        usage.finish_build, build_id, ok=True, started_at=t0,
+        slides=payload["slide_count"], title=payload["title"],
+        details={k: payload[k] for k in ("lint", "unrepaired", "geometry", "retries")},
+        out_dir=session.out_dir, plan=req.plan)
     return payload
+
+
+def _models(req: BuildReq) -> str:
+    return (f"plan {config.ROSTER['crafter'].slug} · design {config.ROSTER['designer'].slug}"
+            f" · coder {config.ROSTER['coder'].slug}")
 
 
 def _begin_build(req: BuildReq) -> SlideSession | JSONResponse:
@@ -345,7 +487,7 @@ def _begin_build(req: BuildReq) -> SlideSession | JSONResponse:
 
 @app.post("/build")
 async def build(req: BuildReq):
-    _session_id_var.set(req.thread_id)
+    _bind_session(req.thread_id)
     session = _begin_build(req)
     if isinstance(session, JSONResponse):
         return session
@@ -366,7 +508,7 @@ async def build(req: BuildReq):
 
 @app.post("/build_async")
 async def build_async(req: BuildReq):
-    _session_id_var.set(req.thread_id)
+    _bind_session(req.thread_id)
     session = _begin_build(req)
     if isinstance(session, JSONResponse):
         return session
@@ -374,7 +516,7 @@ async def build_async(req: BuildReq):
     async def _task() -> None:
         # The contextvar is per-task, so re-bind it here or this build's log
         # records fail every session filter and land nowhere.
-        _session_id_var.set(req.thread_id)
+        _bind_session(req.thread_id)
         try:
             await _run_build(req, session)
         # Nothing may escape a background task: an unretrieved exception is
@@ -396,7 +538,7 @@ async def result(thread_id: str):
     `stage` is "running" until the build ends, then "done" (with `result`) or
     "error" (with `error`). Polling /progress gives the live detail.
     """
-    _session_id_var.set(thread_id)
+    _bind_session(thread_id)
     s = _registry.get(thread_id)
     if s is None:
         return JSONResponse({"error": "unknown thread_id"}, status_code=404)
@@ -427,7 +569,7 @@ async def _stage_sources(session: SlideSession, files: list[UploadFile]) -> list
 
 
 async def _run_draft(request: str, planner: str, src_paths: list[Path],
-                     session: SlideSession) -> dict:
+                     session: SlideSession, utterance_id: int | None = None) -> dict:
     """Run Stage 1 to completion and return the API payload.
 
     Shared by the blocking POST /draft and the background POST /draft_async.
@@ -438,6 +580,8 @@ async def _run_draft(request: str, planner: str, src_paths: list[Path],
              session.session_id, len(src_paths), request[:80])
     session.progress = {"stage": "draft", "message": "crafting plan",
                         "current": 0, "total": 0}
+    t0 = time.time()
+    track = dict(sources=[p.name for p in src_paths], model=config.ROSTER["crafter"].slug)
     try:
         plan = await asyncio.to_thread(craft_plan, request, src_paths)
     # SystemExit as well as Exception: intake shells out for document parsing,
@@ -445,12 +589,16 @@ async def _run_draft(request: str, planner: str, src_paths: list[Path],
     # task -- the same failure mode that took the server down during a build.
     except (Exception, SystemExit) as exc:  # noqa: BLE001
         log.exception("draft failed")
+        usage.record_plan(utterance_id, session.session_id, "draft", t0,
+                          ok=False, error=str(exc), **track)
         session.drafting = False
         session.last_draft_error = str(exc)
         session.progress = {"stage": "error", "message": str(exc),
                             "current": 0, "total": 0}
         raise
 
+    _plan_ids[session.session_id] = usage.record_plan(
+        utterance_id, session.session_id, "draft", t0, ok=True, plan=plan, **track)
     session.drafting = False
     session.last_plan = plan
     session.progress = {"stage": "draft_done", "message": "plan ready",
@@ -460,16 +608,18 @@ async def _run_draft(request: str, planner: str, src_paths: list[Path],
 
 @app.post("/draft")
 async def draft(request: str = Form(...), thread_id: str = Form("default"),
-                planner: str = Form("gpt-oss-120b"),
+                planner: str = Form("gpt-oss-120b"), origin: str = Form("typed"),
                 files: list[UploadFile] = File(default=[])):
-    _session_id_var.set(thread_id)
+    _bind_session(thread_id)
     request = request.strip()
     if not request:
         return JSONResponse({"error": "empty request"}, status_code=400)
     session = _session(thread_id)
     src_paths = await _stage_sources(session, files)
+    utt = usage.record_utterance("example" if origin == "example" else "request",
+                                 request, thread_id, attachments=[p.name for p in src_paths])
     try:
-        return await _run_draft(request, planner, src_paths, session)
+        return await _run_draft(request, planner, src_paths, session, utt)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -481,9 +631,9 @@ async def draft(request: str = Form(...), thread_id: str = Form("default"),
 
 @app.post("/draft_async")
 async def draft_async(request: str = Form(...), thread_id: str = Form("default"),
-                      planner: str = Form("gpt-oss-120b"),
+                      planner: str = Form("gpt-oss-120b"), origin: str = Form("typed"),
                       files: list[UploadFile] = File(default=[])):
-    _session_id_var.set(thread_id)
+    _bind_session(thread_id)
     request = request.strip()
     if not request:
         return JSONResponse({"error": "empty request"}, status_code=400)
@@ -493,14 +643,16 @@ async def draft_async(request: str = Form(...), thread_id: str = Form("default")
     # Uploads must be read before returning: the request body is gone once the
     # response is sent, so staging them inside the task would read a closed file.
     src_paths = await _stage_sources(session, files)
+    utt = usage.record_utterance("example" if origin == "example" else "request",
+                                 request, thread_id, attachments=[p.name for p in src_paths])
     session.drafting = True
     session.last_plan = None
     session.last_draft_error = None
 
     async def _task() -> None:
-        _session_id_var.set(thread_id)
+        _bind_session(thread_id)
         try:
-            await _run_draft(request, planner, src_paths, session)
+            await _run_draft(request, planner, src_paths, session, utt)
         except (Exception, SystemExit):  # noqa: BLE001 — recorded on the session
             pass
 
@@ -512,7 +664,7 @@ async def draft_async(request: str = Form(...), thread_id: str = Form("default")
 @app.get("/draft_result/{thread_id}")
 async def draft_result(thread_id: str):
     """Terminal outcome of a background draft: the plan, or the error."""
-    _session_id_var.set(thread_id)
+    _bind_session(thread_id)
     s = _registry.get(thread_id)
     if s is None:
         return JSONResponse({"error": "unknown thread_id"}, status_code=404)
@@ -538,31 +690,38 @@ async def edit_plan_async(req: EditPlanReq):
     the skill's remote mode. It records its result exactly where a draft does
     — `last_plan` / `last_draft_error` — so one poll endpoint serves both.
     """
-    _session_id_var.set(req.thread_id)
+    _bind_session(req.thread_id)
     if not req.plan.strip() or not req.instruction.strip():
         return JSONResponse({"error": "plan and instruction are required"}, status_code=400)
     session = _session(req.thread_id)
     if session.drafting:
         return JSONResponse({"error": "a draft is already running"}, status_code=409)
+    utt = usage.record_utterance("plan_edit", req.instruction, req.thread_id)
     session.drafting = True
     session.last_plan = None
     session.last_draft_error = None
 
     async def _task() -> None:
-        _session_id_var.set(req.thread_id)
+        _bind_session(req.thread_id)
         config.apply_models(planner=req.planner)
         session.progress = {"stage": "draft", "message": "revising plan",
                             "current": 0, "total": 0}
+        t0 = time.time()
         try:
             plan = await asyncio.to_thread(intake_edit_plan, req.plan, req.instruction)
         # Nothing may escape a background task (see build_async).
         except (Exception, SystemExit) as exc:  # noqa: BLE001 — recorded on the session
             log.exception("edit_plan failed")
+            usage.record_plan(utt, req.thread_id, "plan_edit", t0, ok=False, error=str(exc),
+                              model=config.ROSTER["crafter"].slug)
             session.drafting = False
             session.last_draft_error = str(exc)
             session.progress = {"stage": "error", "message": str(exc),
                                 "current": 0, "total": 0}
             return
+        _plan_ids[req.thread_id] = usage.record_plan(
+            utt, req.thread_id, "plan_edit", t0, ok=True, plan=plan,
+            model=config.ROSTER["crafter"].slug)
         session.drafting = False
         session.last_plan = plan
         session.progress = {"stage": "draft_done", "message": "plan ready",
@@ -583,7 +742,7 @@ class EditReq(BaseModel):
 
 @app.post("/edit")
 async def edit(req: EditReq):
-    _session_id_var.set(req.thread_id)
+    _bind_session(req.thread_id)
     s = _registry.get(req.thread_id)
     if s is None or s.deck is None:
         return JSONResponse({"error": "no deck to edit — build one first"},
@@ -594,6 +753,8 @@ async def edit(req: EditReq):
     if not instruction:
         return JSONResponse({"error": "empty instruction"}, status_code=400)
 
+    utt = usage.record_utterance("slide_edit", instruction, req.thread_id, slide_n=req.slide_n)
+    t0 = time.time()
     s.building = True
     log.info("edit thread=%s slide=%d: %r",
              req.thread_id, req.slide_n, instruction[:80])
@@ -603,10 +764,16 @@ async def edit(req: EditReq):
     except Exception as exc:  # noqa: BLE001
         s.building = False
         log.exception("edit failed")
+        usage.record_edit(_build_ids.get(req.thread_id), req.thread_id, s.out_dir,
+                          reason="slide_edit", started_at=t0, ok=False, error=str(exc),
+                          utterance_id=utt, slide_n=req.slide_n)
         return JSONResponse({"error": str(exc)}, status_code=500)
     s.previews = result["previews"]
     s.pptx_path = result["pptx"]
     s.building = False
+    await asyncio.to_thread(usage.record_edit, _build_ids.get(req.thread_id), req.thread_id,
+                            s.out_dir, reason="slide_edit", started_at=t0, ok=True,
+                            utterance_id=utt, slides=len(s.previews), slide_n=req.slide_n)
     return {"slide_count": len(s.previews), "edited": req.slide_n}
 
 
@@ -616,7 +783,7 @@ async def retry(thread_id: str, slide_n: int):
     geometry pass (detector + editor + verify gate) so the retry gets the
     same post-processing the full build does. Same brief, same plan — just
     a different sampling, then a correction pass scoped to this slide."""
-    _session_id_var.set(thread_id)
+    _bind_session(thread_id)
     s = _registry.get(thread_id)
     if s is None or s.deck is None:
         return JSONResponse({"error": "no deck — build one first"},
@@ -624,6 +791,7 @@ async def retry(thread_id: str, slide_n: int):
     if s.building:
         return JSONResponse({"error": "busy"}, status_code=409)
     s.building = True
+    t0 = time.time()
     log.info("retry thread=%s slide=%d", thread_id, slide_n)
     try:
         def _run():
@@ -634,10 +802,15 @@ async def retry(thread_id: str, slide_n: int):
     except Exception as exc:  # noqa: BLE001
         s.building = False
         log.exception("retry failed")
+        usage.record_edit(_build_ids.get(thread_id), thread_id, s.out_dir, reason="retry",
+                          started_at=t0, ok=False, error=str(exc), slide_n=slide_n)
         return JSONResponse({"error": str(exc)}, status_code=500)
     s.pptx_path = pptx
     s.previews = previews
     s.building = False
+    await asyncio.to_thread(usage.record_edit, _build_ids.get(thread_id), thread_id,
+                            s.out_dir, reason="retry", started_at=t0, ok=True,
+                            slides=len(s.previews), slide_n=slide_n)
     return {"slide_count": len(s.previews),
             "retried": slide_n,
             "geometry": result.get("geometry", {})}
@@ -645,7 +818,7 @@ async def retry(thread_id: str, slide_n: int):
 
 @app.get("/progress/{thread_id}")
 async def progress(thread_id: str) -> dict:
-    _session_id_var.set(thread_id)
+    _bind_session(thread_id)
     s = _registry.get(thread_id)
     return s.progress if s else {"stage": "idle", "message": "",
                                   "current": 0, "total": 0}
@@ -653,7 +826,7 @@ async def progress(thread_id: str) -> dict:
 
 @app.get("/deck/{thread_id}")
 async def deck(thread_id: str) -> dict:
-    _session_id_var.set(thread_id)
+    _bind_session(thread_id)
     s = _registry.get(thread_id)
     if s is None:
         return {"slide_count": 0, "title": "", "building": False}
@@ -666,7 +839,7 @@ async def deck(thread_id: str) -> dict:
 
 @app.get("/preview/{thread_id}/{idx}")
 async def preview(thread_id: str, idx: int):
-    _session_id_var.set(thread_id)
+    _bind_session(thread_id)
     s = _registry.get(thread_id)
     if s is None or not (0 < idx <= len(s.previews)):
         return JSONResponse({"error": "slide not rendered"}, status_code=404)
@@ -675,7 +848,7 @@ async def preview(thread_id: str, idx: int):
 
 @app.get("/download/{thread_id}")
 async def download(thread_id: str):
-    _session_id_var.set(thread_id)
+    _bind_session(thread_id)
     s = _registry.get(thread_id)
     if s is None or s.pptx_path is None or not s.pptx_path.exists():
         return JSONResponse({"error": "deck not rendered yet"}, status_code=404)
@@ -689,7 +862,7 @@ async def download(thread_id: str):
 
 @app.post("/clear/{thread_id}")
 async def clear(thread_id: str) -> dict:
-    _session_id_var.set(thread_id)
+    _bind_session(thread_id)
     with _registry_lock:
         s = _registry.pop(thread_id, None)
     if s is not None:
@@ -707,7 +880,7 @@ async def abort(thread_id: str) -> dict:
     build thread (if any) keeps running server-side until it completes — a v2
     would thread cancellation tokens through the pipeline to actually stop it.
     For now this just unblocks the UI."""
-    _session_id_var.set(thread_id)
+    _bind_session(thread_id)
     s = _registry.get(thread_id)
     if s is None:
         return {"aborted": False}

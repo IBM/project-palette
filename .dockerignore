@@ -9,6 +9,7 @@ node_modules/
 
 # Runtime artifacts (per-session decks, ephemeral on the image too)
 workspace/
+data/                # usage.db (local usage stats)
 
 # VCS + editor noise
 .git/

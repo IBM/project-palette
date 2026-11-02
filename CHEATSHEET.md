@@ -1,7 +1,10 @@
 # Cheatsheet — tear down, restart, test
 
-[← Palette README](README.md) · [the benchmark](benchmark/BENCHMARK.md) ·
+[← Palette README](README.md) · [running it](RUNNING.md) · [the benchmark](benchmark/BENCHMARK.md) ·
 [the ReAct host](agents/README.md) · [the skill](skills/palette/SKILL.md)
+
+Just running Palette in a container (start/stop, URLs, where the database and
+decks are)? That is [`RUNNING.md`](RUNNING.md).
 
 Copy-pasteable. `README.md` explains Palette; this explains getting a working
 loop back after you have broken one. To *measure* the skill rather than smoke-test

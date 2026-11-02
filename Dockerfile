@@ -6,7 +6,8 @@
 # end-to-end. Image is ~1.3 GB; most of that is LibreOffice.
 #
 # Build:  docker build -t palette .
-# Run:    docker run --rm -p 8080:8080 -e RITS_API_KEY=$RITS_API_KEY palette
+# Run:    docker run --rm -p 18814:8080 --env-file .env \
+#           -v ~/.local/share/palette:/app/data -e PALETTE_DATA_DIR=/app/data palette
 
 # Pinned to bookworm: trixie dropped fonts-ibm-plex from the archive,
 # and IBM Plex is core to the LoRA's typography. Revisit when a
@@ -17,7 +18,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PORT=8080
+    PORT=8080 \
+    PALETTE_DATA_DIR=/app/data
 
 # System deps:
 #   nodejs/npm — runs the pptxgenjs renderer
@@ -67,5 +69,12 @@ COPY . .
 # via the PORT env var in app.py:main(). Default to 8080 when unset.
 EXPOSE 8080
 
-# Shell form so $PORT expands at container start, not at build time
-CMD python app.py
+# Writable by whichever uid the entrypoint runs as (see docker-entrypoint.sh):
+# workspace/ holds live sessions; data/ is where the usage db and archived
+# decks go — normally a host folder mounted over it.
+RUN mkdir -p /app/workspace /app/data && chmod 1777 /app/workspace /app/data \
+    && chmod +x /app/docker-entrypoint.sh
+
+# Runs app.py as the owner of the mounted data folder, so files it writes on
+# a Linux host are not root-owned. app.py reads $PORT at start.
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

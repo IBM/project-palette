@@ -164,6 +164,9 @@ select{font-family:inherit;font-size:12px;padding:5px 8px;border-radius:7px;
   font-family:inherit;font-size:14px;line-height:1.5;background:transparent;
   color:var(--text);max-height:160px;padding:5px 0}
 .composer textarea::placeholder{color:var(--muted)}
+.notice{max-width:680px;margin:7px auto 0;font-size:11.5px;line-height:1.45;
+  color:var(--muted);text-align:center}
+.notice b{color:var(--warn);font-weight:600}
 .icon-btn{background:transparent;border:none;color:var(--muted);
   font-size:17px;padding:4px 7px;border-radius:7px}
 .icon-btn:hover{background:var(--sunk);color:var(--text)}
@@ -298,6 +301,9 @@ select{font-family:inherit;font-size:12px;padding:5px 8px;border-radius:7px;
           onclick="document.getElementById('files').click()">&#128206;</button>
         <button class="send" id="sendBtn" onclick="send()">&uarr;</button>
       </div>
+      <div class="notice"><b>Heads up:</b> Palette is a research demo. What you
+        type and the plans you build are logged for usage analytics &mdash; please
+        don&rsquo;t enter confidential information, credentials, or personal data.</div>
     </div>
   </section>
 
@@ -341,7 +347,7 @@ const EXAMPLE_PROMPTS = [
 
 function useExample(i) {
   if (busy) return
-  draft(EXAMPLE_PROMPTS[i])
+  draft(EXAMPLE_PROMPTS[i], 'example')
 }
 
 function renderEmpty() {
@@ -464,13 +470,14 @@ function send() {
   }
 }
 
-async function draft(request) {
+async function draft(request, origin = 'typed') {
   setBusy(true)
   addMsg('user', request)
   const status = addMsg('status', 'Drafting a plan...')
   const fd = new FormData()
   fd.append('request', request)
   fd.append('thread_id', TID)
+  fd.append('origin', origin)   // 'example' when an example card was clicked (usage stats)
   for (const f of attachedFiles) fd.append('files', f)
   // Snapshot the names BEFORE we clear, so the plan card can render them
   // as a sources strip even after the array is reset.

@@ -175,24 +175,230 @@ confirm-before-build workflow.
 
 ---
 
-## Running in a container (optional)
+## Running in a container
 
-If you'd rather not install Python / Node / LibreOffice on your machine:
+If you'd rather not install Python / Node / LibreOffice on your machine, run
+Palette as a container. The image installs everything — Python, Node,
+LibreOffice, Poppler, fonts (IBM Plex, Inter, JetBrains Mono, Carlito).
+~1.2 GB, ~5 minutes to build the first time. The steps are the same on macOS
+and Linux; [On Linux](#on-linux) lists the few extra things to know there.
+
+> **Just want the commands?** [`RUNNING.md`](RUNNING.md) is a one-page cheat
+> sheet for macOS and Linux: setup, start/stop, the URLs, and where the
+> database and decks are.
+
+**You need:** Docker or Podman, `make`, `git`, and the IBM VPN if you use
+RITS. `jq` is optional (it only pretty-prints the health check).
+`podman` works anywhere this says `docker`; the Makefile picks whichever is
+installed.
+
+**1. Settings.** The container reads `.env` via `--env-file`. The smallest
+working setup sends every model role to RITS and needs only the key:
 
 ```bash
-docker build -t palette .
-docker run --rm -p 8080:8080 --env-file .env palette
-# -> http://localhost:8080   (or: make serve-start, which does this for you)
+cp .env.example .env
+# RITS-only: delete the PALETTE_CE_* and GPT_OSS_120B_PROVIDER/WATSONX_* lines,
+# then set
+RITS_API_KEY=<your RITS key>
+# and, for the usage dashboard (see Usage stats), a random token:
+PALETTE_STATS_TOKEN=<output of: python3 -c "import secrets;print(secrets.token_urlsafe(24))">
 ```
 
-The Dockerfile installs everything Palette needs — Python, Node, LibreOffice, Poppler, fonts (IBM Plex, Inter, JetBrains Mono, Carlito). ~1.3 GB image, ~5 minutes to build the first time.
+RITS is only reachable on the IBM VPN — connect before starting the container.
+For a RITS-free setup, fill in the fleet + watsonx values instead (see
+[Configure the model backends](#3-configure-the-model-backends)).
+
+**2. Build and run.**
+
+```bash
+make docker-build         # builds the image for this machine's CPU
+make docker-up            # background; prints the URLs, database and deck folder
+make docker-status        # is it up, and where is everything
+make docker-logs          # follow the log
+make docker-down          # stop (data is kept)
+```
+
+`make docker-run` runs it in the foreground instead (Ctrl-C stops it).
+`make docker-up` is this `docker run`, if you'd rather type it:
+
+```bash
+mkdir -p ~/.local/share/palette
+docker run -d --name palette --restart unless-stopped \
+  -p 18814:8080 --env-file .env \
+  -v ~/.local/share/palette:/app/data -e PALETTE_DATA_DIR=/app/data \
+  -e PALETTE_HOST_DATA_DIR=$HOME/.local/share/palette palette
+docker logs -f palette    # follow the log
+docker rm -f palette      # stop and remove (stats and decks stay on your disk)
+```
+
+**3. Check it.**
+
+```bash
+curl -s localhost:18814/health | jq '{status, rits_key_set, rits_needed}'
+```
+
+Then open http://localhost:18814 for Palette and
+`http://localhost:18814/stats?token=<PALETTE_STATS_TOKEN>` for the
+[usage dashboard](#usage-stats).
+
+`rits_needed: true` with `rits_key_set: false` means a role routes to RITS but
+the key did not reach the container — fix `.env` and recreate the container
+(`docker rm -f palette`, then `docker run` again; `docker restart` does not
+re-read `--env-file`). Source changes need `make docker-build` first — the
+image bakes in the code, not the settings.
+
+**Where the files are.** The `-v` line mounts a folder on your machine,
+`~/.local/share/palette`, into the container. It holds the usage database
+(`usage.db`) and every built deck (`decks/`, see
+[Decks are archived](#decks-are-archived)). They are ordinary files you can
+open and back up, and they survive deleting the container or the image.
+Without the `-v`, they live inside the container and vanish when it is
+recreated. `make docker-run` mounts it for you (`make docker-run
+DATA_DIR=/some/where` to use another folder).
+
+### On Linux
+
+The commands above work unchanged. Also:
+
+- **Build on the machine itself.** Images are per-CPU-architecture; an image
+  built on an Apple-silicon Mac will not run on an x86 server. `make
+  docker-build` builds for the machine it runs on.
+- **Run Docker without `sudo`.** Add yourself to the `docker` group once
+  (`sudo usermod -aG docker $USER`, then log in again), or use rootless
+  Docker / Podman. Running with `sudo` makes the data folder root-owned.
+- **File ownership is handled.** Ordinary (rootful) Docker runs containers as
+  root, which would leave root-owned files in your home folder. The image's
+  entrypoint (`docker-entrypoint.sh`) instead starts Palette as whoever owns
+  the mounted folder, which is you as long as you created it
+  (`mkdir -p ~/.local/share/palette`; `make docker-run` does this).
+- **SELinux** (Fedora, RHEL): add `:Z` to the mount so the container may
+  write to it: `-v ~/.local/share/palette:/app/data:Z`.
+- **Letting other people use it** (a shared server): they open
+  `http://<server-name>:18814` — open the port in the firewall if needed. Each
+  browser counts as its own user on the dashboard. Behind a reverse proxy,
+  leave `PALETTE_TRUST_FORWARDED` at its default (`1`) so users are told apart
+  by their own address, not the proxy's.
+
+### Restarts
+
+`docker restart`, recreating the container, and rebuilding the image all keep
+the stats and archived decks — they are in `~/.local/share/palette`, not in
+the container. What a restart does lose: open sessions (someone mid-deck
+starts again; decks they already built are still archived) and any build in
+flight, which the dashboard marks *interrupted* after 30 minutes.
+
+- **Linux:** Docker starts the container again after a reboot by itself
+  (`--restart unless-stopped`). With rootless Podman, enable the restart
+  service once: `systemctl --user enable podman-restart.service`.
+- **macOS (Podman):** the Podman VM does not start at login — run `podman
+  machine start` after a reboot (or turn on auto-start in Podman Desktop).
+  For the container to come back with the VM, enable the restart service
+  inside it once:
+  `podman machine ssh -- systemctl --user enable podman-restart.service`.
+
+`make serve-start` can also manage the container: with no `--mode`, it picks
+container mode whenever the `palette` image exists (see
+[Running Palette as a local service](#running-palette-as-a-local-service)).
+
+---
+
+## Usage stats
+
+Palette records who uses it and what they ask for, in a local SQLite file, and
+serves a private dashboard to view it.
+
+**Turn it on.** Set a token in `.env` and restart:
+
+```bash
+python3 -c "import secrets;print(secrets.token_urlsafe(24))"   # -> PALETTE_STATS_TOKEN=...
+```
+
+Then open **`http://localhost:18814/stats?token=<PALETTE_STATS_TOKEN>`**. Without
+the token, or with none set, `/stats` answers 404 like any unknown path, and it
+is left out of `/openapi.json`. Treat the URL as a password.
+
+**What the dashboard shows:**
+
+- Users, sessions, utterances, builds (and failures), slides built and average
+  build time, for today / 7 days / 30 days / all time
+- Daily active users for the last 30 days
+- **Utterances → plan → deck**: every utterance followed to its outcome.
+  Each row shows whether a plan was made and whether a deck was built.
+  Click a row (or **Expand all**) for:
+  1. the utterance: time, user, session, attached files
+  2. the plan: full text, start time, how long it took, model, or the error
+  3. the deck: start/finish time, duration, slides, title, models, whether the
+     user edited the plan by hand before building (and that plan), lint notes,
+     layout issues the repair loop could not fix, coder retries, the geometry
+     report, the error if it failed, whether the user pressed stop, slide
+     thumbnails, `.pptx` and `plan.md` downloads
+  4. every slide edit and retry after the build: time, slide, result, duration
+
+  Filter by kind (deck request, example prompt, plan edit, slide edit, loaded
+  plan) or outcome (deck built, plan only, plan failed, build failed, …), or
+  search the utterance, plan text, deck title, user or session.
+- **Users**: first and last seen, sessions, utterances and builds per user
+- **Builds**: the last 200 builds with a thumbnail; click it to page through
+  the slides
+
+Raw JSON for scripts: `/stats/api?token=…`. Utterances as CSV:
+`/stats/utterances.csv?token=…`.
+
+**What is recorded** (`usage.py`). Each step links to the one that caused it:
+
+| Table | One row per | Fields | Links to |
+|---|---|---|---|
+| `utterances` | deck request (typed or example prompt), plan edit or slide edit | text, kind, attached file names | — |
+| `plans` | plan drafted or revised | plan text, started, seconds, model, ok/error | `utterance_id` |
+| `builds` | deck build (row opens when it starts) | started, seconds, slides, title, palette, models, the plan used, `plan_edited`, lint/repair/retry details, ok/error, archive folder | `plan_id` |
+| `deck_versions` | slide edit or retry after a build | slide, started, seconds, ok/error | `build_id`, `utterance_id` |
+| `requests` | POST (draft, build, edit, retry, …) and download | path, status, duration, session, user | — |
+
+### Decks are archived
+
+Every successful build is copied to its own folder,
+named so a day's decks list in the order they were built:
+
+```
+~/.local/share/palette/decks/
+  2026-11-02/
+    201041Z-0002-on-call-rotation-quick-overview/
+    204220Z-0004-example-on-call-rotation-quick-guide/
+      deck.pptx  plan.md  slide-1.png  slide-2.png  slide-3.png
+```
+
+`<YYYY-MM-DD>/<HHMMSS>Z-<build id>-<title>`, in UTC (the `Z`). Decks started
+from one of the UI's example prompts carry `example-`, so with many people
+trying the examples they are easy to tell apart from real requests. Slide
+edits and retries refresh the folder, so it always holds the latest version.
+The session workspace is not enough on its own: **New** deletes it and it
+lives inside the container. Archives from before this naming are renamed
+automatically the next time Palette starts.
+
+"User" is anonymous. There is no login, so a user is a random `palette_uid`
+cookie set on the first page load (one browser, kept for a year). Callers
+without the cookie, such as the agent skill or scripts, are grouped by a salted
+hash of their IP and labelled with their user agent (`python-httpx`, `curl`, …).
+No names or IP addresses are stored. Obvious secrets (API keys, tokens, JWTs)
+are redacted from text before it is written, and text is capped at 4,000
+characters (plans at 20,000).
+
+The UI tells people under the chat box that what they type is logged, and asks
+them not to enter confidential information.
+
+**Where the data lives.** `~/.local/share/palette/` on your machine:
+`usage.db` and `decks/`. `make dev` writes there directly, and the container
+writes there through its bind mount (`/app/data` inside), so both ways of
+running Palette share one history. Set `PALETTE_DATA_DIR` to move it
+(`PALETTE_USAGE_DB` / `PALETTE_DECK_ARCHIVE` move just one part). Query it
+with `sqlite3 ~/.local/share/palette/usage.db`. Back it up by copying the
+folder while Palette is stopped. SQLite runs in rollback-journal mode, not WAL,
+because WAL is unreliable over the file sharing Docker/Podman use on macOS.
 
 ---
 
 ## Configuration
 
-| Env var | Required | Default | What |
-|---|---|---|---|
 All of these go in `.env` (see `.env.example` for the full, commented list,
 including the Code Engine deployment settings).
 
@@ -203,6 +409,13 @@ including the Code Engine deployment settings).
 | `WATSONX_APIKEY` / `WATSONX_PROJECT_ID` (or `WATSONX_SPACE_ID`) / `WATSONX_URL` | with watsonx | URL `https://us-south.ml.cloud.ibm.com` | watsonx.ai credentials; only us-south hosts gpt-oss-120b |
 | `RITS_API_KEY` | if any role still uses RITS | — | Bearer token for RITS. `/health` → `rits_needed` says whether it is required |
 | `PALETTE_KEEPWARM_MINUTES` | no | `5` | While the server runs, ping the designer/coder model with a 1-token request this often so RITS doesn't scale it down (a cold start costs ~5 min). Skipped when real traffic was more recent. `0` disables. Status under `/health` → `keepwarm` |
+| `PALETTE_STATS_TOKEN` | no | — (dashboard off) | Token for the usage dashboard at `/stats?token=…` |
+| `PALETTE_DATA_DIR` | no | `~/.local/share/palette` | Folder for usage stats + archived decks (`/app/data` in the image) |
+| `PALETTE_USAGE_DB` | no | `$PALETTE_DATA_DIR/usage.db` | SQLite file for usage stats |
+| `PALETTE_DECK_ARCHIVE` | no | `$PALETTE_DATA_DIR/decks` | Where built decks are archived |
+| `PALETTE_USAGE_SALT` | no | `palette-usage` | Salt for the anonymous IP hash |
+| `PALETTE_HOST_DATA_DIR` | no | — | In a container: the host folder mounted at `/app/data`, so the dashboard and `/health` show paths you can open |
+| `PALETTE_TRUST_FORWARDED` | no | `1` | Identify users by `X-Forwarded-For` (set `0` if Palette is exposed directly and you don't trust that header) |
 | `PORT` | no | `18814` | Bind port. Useful in container deployments where the platform injects a port. |
 | `RITS_BASE_URL` | no | (set in `config.py`) | Override only if pointing at a non-default RITS endpoint. |
 
@@ -474,6 +687,8 @@ not given.
 app.py             FastAPI app, routes, per-session logging
 ui.py              Single-file HTML/CSS/JS frontend (served at /)
 config.py          Paths, model roster, RITS client config
+usage.py           Usage tracking → SQLite (~/.local/share/palette/usage.db)
+stats_ui.py        The token-gated /stats dashboard page
 
 intake.py          Stage 1 — crafter:   request + refs  →  plan.md
 pipeline.py        Stage 2 — designer + coder:  plan.md  →  per-slide JS
@@ -503,6 +718,7 @@ tests/             Contract tests binding the skill to palette.py's CLI
 | Doc | Read it when |
 |---|---|
 | **this file** | you want to run Palette — install, the web UI, config, containers, deployment |
+| [`RUNNING.md`](RUNNING.md) | you want to start Palette in a container (macOS or Linux), find the UI and dashboard, or find the database and decks |
 | [`CHEATSHEET.md`](CHEATSHEET.md) | something is broken and you want to reset it, or you want the test loop in six lines |
 | [`docs/skill-guide.html`](docs/skill-guide.html) | you are showing this to someone — a single page covering try it, test it, and what broke. `open docs/skill-guide.html`, or serve `docs/` anywhere |
 | [`benchmark/BENCHMARK.md`](benchmark/BENCHMARK.md) | you want to measure the skill: 33 scripted conversations over 13 real documents, on three hosts, with every Palette call traced. Start with `make bench-check`; the documents live at `$PALETTE_BENCH_INPUTS`, outside this repo |
