@@ -409,6 +409,8 @@ including the Code Engine deployment settings).
 | `WATSONX_APIKEY` / `WATSONX_PROJECT_ID` (or `WATSONX_SPACE_ID`) / `WATSONX_URL` | with watsonx | URL `https://us-south.ml.cloud.ibm.com` | watsonx.ai credentials; only us-south hosts gpt-oss-120b |
 | `RITS_API_KEY` | if any role still uses RITS | — | Bearer token for RITS. `/health` → `rits_needed` says whether it is required |
 | `PALETTE_KEEPWARM_MINUTES` | no | `5` | While the server runs, ping the designer/coder model with a 1-token request this often so RITS doesn't scale it down (a cold start costs ~5 min). Skipped when real traffic was more recent. `0` disables. Status under `/health` → `keepwarm` |
+| `PALETTE_MAX_CONCURRENT_BUILDS` | no | `16` | Deck builds run at once; more wait in a first-come queue and the UI shows "queued — #N in line". Each build makes up to 8 parallel model calls, so this bounds the load on RITS. Live counts under `/health` → `builds` |
+| `PALETTE_WORKER_THREADS` | no | `64` | Threads for builds, drafts, edits and usage writes. Python's default (12 on an 8-vCPU host) made the 13th build and every draft behind it stall; keep this well above `PALETTE_MAX_CONCURRENT_BUILDS` |
 | `PALETTE_STATS_TOKEN` | no | — (dashboard off) | Token for the usage dashboard at `/stats?token=…` |
 | `PALETTE_DATA_DIR` | no | `~/.local/share/palette` | Folder for usage stats + archived decks (`/app/data` in the image) |
 | `PALETTE_USAGE_DB` | no | `$PALETTE_DATA_DIR/usage.db` | SQLite file for usage stats |

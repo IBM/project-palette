@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 import os
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Lock
 
@@ -200,6 +201,12 @@ async def _keepwarm_loop() -> None:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    # Every asyncio.to_thread call (builds, drafts, edits, usage writes) runs
+    # on the loop's default executor; see config.WORKER_THREADS for why the
+    # stock size is too small.
+    asyncio.get_running_loop().set_default_executor(
+        ThreadPoolExecutor(max_workers=config.WORKER_THREADS,
+                           thread_name_prefix="palette"))
     usage.init()
     task = None
     if config.KEEPWARM_MINUTES > 0:
@@ -360,6 +367,7 @@ async def health() -> dict:
                                  else "rits"),
         "available_models": config.available_models(),
         "keepwarm": _keepwarm,
+        "builds": _builds.stats(),
     }
 
 
@@ -390,13 +398,90 @@ async def example(name: str):
     return {"name": name, "content": target.read_text()}
 
 
+# --- Build admission -----------------------------------------------------------
+# At most config.MAX_CONCURRENT_BUILDS builds run at once; the rest wait in
+# arrival order. A waiting session's /progress reads "queued — #N in line", so
+# the UI (which shows progress messages as-is) explains the wait instead of
+# sitting on "designing deck". Single event loop, so no lock is needed.
+
+class BuildAborted(Exception):
+    """A queued build was dropped (/abort or /clear) before it started."""
+
+
+class BuildQueue:
+    def __init__(self, limit: int) -> None:
+        self.limit = max(1, limit)
+        self.running = 0
+        self.waiting: list[tuple[SlideSession, asyncio.Future]] = []
+
+    async def acquire(self, session: SlideSession) -> None:
+        if self.running < self.limit and not self.waiting:
+            self.running += 1
+            return
+        fut = asyncio.get_running_loop().create_future()
+        self.waiting.append((session, fut))
+        self._announce()
+        try:
+            await fut
+        except asyncio.CancelledError:
+            self._forget(fut)
+            raise
+
+    def release(self) -> None:
+        # Hand the slot straight to the next in line, so `running` is unchanged
+        # and a newcomer can never jump the queue between release and wake-up.
+        while self.waiting:
+            _, fut = self.waiting.pop(0)
+            if not fut.done():
+                fut.set_result(None)
+                self._announce()
+                return
+        self.running -= 1
+
+    def drop(self, session: SlideSession) -> bool:
+        """Remove `session` from the queue; its acquire() raises BuildAborted."""
+        for entry in self.waiting:
+            if entry[0] is session:
+                self._forget(entry[1])
+                entry[1].set_exception(BuildAborted("build was cancelled while queued"))
+                return True
+        return False
+
+    def stats(self) -> dict:
+        return {"running": self.running, "queued": len(self.waiting),
+                "limit": self.limit}
+
+    def _forget(self, fut: asyncio.Future) -> None:
+        self.waiting = [e for e in self.waiting if e[1] is not fut]
+        self._announce()
+
+    def _announce(self) -> None:
+        for pos, (s, _) in enumerate(self.waiting, 1):
+            s.progress = {"stage": "queued",
+                          "message": f"queued — #{pos} in line "
+                                     f"({self.running} decks building)",
+                          "current": 0, "total": 0}
+
+
+_builds = BuildQueue(config.MAX_CONCURRENT_BUILDS)
+
+
 async def _run_build(req: BuildReq, session: SlideSession) -> dict:
     """Run one deck build to completion and return the API payload.
 
     Shared by the blocking POST /build and the background POST /build_async
     so the two can never drift apart. Mutates `session` the same way in both
     cases; raises on failure, leaving the caller to shape the error response.
+    Waits for a slot in _builds first; raises BuildAborted if dropped meanwhile.
     """
+    await _builds.acquire(session)
+    try:
+        return await _run_admitted_build(req, session)
+    finally:
+        _builds.release()
+
+
+async def _run_admitted_build(req: BuildReq, session: SlideSession) -> dict:
     t0 = time.time()
 
     def _progress(message: str, current: int, total: int) -> None:
@@ -869,6 +954,7 @@ async def clear(thread_id: str) -> dict:
         # Detach + close the file handler BEFORE deleting the directory the
         # file lives in; otherwise the OS keeps the inode alive and the
         # next session_log opens a fresh inode while this one leaks.
+        _builds.drop(s)
         _remove_session_log(s)
         shutil.rmtree(s.root, ignore_errors=True)
     return {"cleared": s is not None}
@@ -884,6 +970,8 @@ async def abort(thread_id: str) -> dict:
     s = _registry.get(thread_id)
     if s is None:
         return {"aborted": False}
+    # A queued build is removed outright; a running one keeps going (above).
+    _builds.drop(s)
     s.building = False
     s.progress = {"stage": "aborted", "message": "stopped",
                   "current": 0, "total": 0}

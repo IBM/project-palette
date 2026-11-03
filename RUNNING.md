@@ -164,6 +164,7 @@ sqlite3 -header -csv $DB "SELECT datetime(ts,'unixepoch') at, kind, text FROM ut
 | `make docker-status` says not answering | `make docker-logs`; then `make docker-up` |
 | Builds fail, `/health` shows `"rits_key_set": false` | `RITS_API_KEY` missing in `.env` → fix it, `make docker-up` |
 | Builds hang or time out | connect the IBM VPN |
+| Status says `queued — #N in line` | more than `PALETTE_MAX_CONCURRENT_BUILDS` (16) decks are building; it starts on its own. Raise the cap in `.env` → `make docker-up` |
 | Dashboard says Not Found | wrong or missing token → `make stats-url` |
 | `port is already allocated` | Palette is already running (`make docker-status`), or another app uses 18814 → `make docker-up PORT=18815` |
 | `permission denied` on `/var/run/docker.sock` (Linux) | not in the `docker` group yet: log out and back in |
