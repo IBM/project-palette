@@ -84,7 +84,14 @@ CONTAINER_ENV_KEYS = (
     "WATSONX_SPACE_ID",
     "WATSONX_URL",
     "WATSONX_GPT_OSS_120B_MODEL",
+    "PALETTE_STATS_TOKEN",
+    "PALETTE_USAGE_SALT",
 )
+
+#: Host folder for usage stats + archived decks, bind-mounted at /app/data.
+#: PALETTE_DATA_DIR in the env file moves it; the same setting is where a
+#: process-mode server writes, so both modes share one history.
+DEFAULT_DATA_DIR = "~/.local/share/palette"
 
 
 class ServiceError(RuntimeError):
@@ -485,11 +492,17 @@ def start_container(cfg: ServiceConfig) -> dict[str, Any]:
     # Clear a stopped container of the same name; otherwise `run` errors.
     subprocess.run([runtime, "rm", "-f", cfg.container_name], capture_output=True, text=True)
 
+    data_dir = Path(cfg.env.get("PALETTE_DATA_DIR") or os.environ.get("PALETTE_DATA_DIR")
+                    or DEFAULT_DATA_DIR).expanduser()
+    data_dir.mkdir(parents=True, exist_ok=True)
     command = [
         runtime, "run", "-d",
         "--name", cfg.container_name,
         "--restart", "unless-stopped",
         "-p", f"{cfg.port}:{CONTAINER_PORT}",
+        "-v", f"{data_dir}:/app/data",
+        "-e", "PALETTE_DATA_DIR=/app/data",
+        "-e", f"PALETTE_HOST_DATA_DIR={data_dir}",
     ]
     for name in CONTAINER_ENV_KEYS:
         value = cfg.env.get(name) or os.environ.get(name)

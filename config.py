@@ -276,6 +276,17 @@ def available_models() -> dict[str, list[str]]:
 # Coder calls fan out across slides; this caps concurrent RITS requests.
 CODER_WORKERS = int(os.environ.get("DECK_FORGE_CODER_WORKERS", "8"))
 
+# Deck builds the server runs at once; more wait in a FIFO queue and see their
+# place in line on /progress. Each build fans out up to CODER_WORKERS model
+# calls, so this times CODER_WORKERS bounds the load one server puts on RITS.
+MAX_CONCURRENT_BUILDS = int(os.environ.get("PALETTE_MAX_CONCURRENT_BUILDS", "16"))
+
+# Threads behind asyncio.to_thread. Python's default, min(32, cpus + 4), is 12
+# on an 8-vCPU host: the 13th build -- and every draft and edit behind it --
+# stalled waiting for a thread. The work is nearly all waiting on model calls,
+# so size this well above MAX_CONCURRENT_BUILDS.
+WORKER_THREADS = int(os.environ.get("PALETTE_WORKER_THREADS", "64"))
+
 # The Stage-2 build self-heals render errors before handing back the deck:
 # render -> feed errors to the editor -> re-render, up to this many passes.
 MAX_BUILD_REPAIR = int(os.environ.get("DECK_FORGE_MAX_BUILD_REPAIR", "2"))

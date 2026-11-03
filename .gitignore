@@ -56,3 +56,6 @@ benchmark/inputs/
 cuga_workspace/
 benchmark/-runs/
 benchmark/decks-react/
+
+# Usage stats database (usage.py)
+data/

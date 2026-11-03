@@ -5,7 +5,8 @@
 # config from deployment/config.sh (override via env vars — see
 # deployment/DEPLOYMENT.md).
 
-.PHONY: help install dev docker-build docker-run clean \
+.PHONY: help install dev docker-build docker-run docker-up docker-down docker-logs \
+        docker-status stats-url clean \
         ce-build ce-push ce-buildpush ce-cloud-build ce-deploy ce-release \
         hf-dry-run hf-publish hf-local \
         skill-test skill-install clean-state distclean hooks \
@@ -18,6 +19,13 @@
         bench-react-check bench-clean
 
 PORT ?= 18814
+
+# Container CLI: docker if installed, else podman (same flags for everything here).
+DOCKER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
+# Usage stats + archived decks, on the host (bind-mounted into the container).
+DATA_DIR ?= $(HOME)/.local/share/palette
+# Container name for docker-up/down/logs.
+NAME ?= palette
 
 # Runtime settings (model backends + keys) live in ./.env — see .env.example.
 # serve-* targets read it via PALETTE_ENV_FILE; without it they fall back to
@@ -73,10 +81,46 @@ dev: ## Run the server on http://localhost:$(PORT) (loads ./.env if present)
 # --- Local Docker (native arch) ---
 
 docker-build: ## Build the container image for your local arch
-	docker build -t palette .
+	$(DOCKER) build -t palette .
 
-docker-run: ## Run the local container, mapping $(PORT) -> 8080
-	docker run --rm -p $(PORT):8080 -e RITS_API_KEY=$$RITS_API_KEY palette
+# Shared by docker-run (foreground) and docker-up (background). DATA_DIR on
+# the host holds usage.db + decks/; it is created here, as you, so the
+# container runs as you on Linux too (see docker-entrypoint.sh).
+DOCKER_RUN_ARGS = --name $(NAME) -p $(PORT):8080 --env-file .env \
+	  -v $(DATA_DIR):/app/data -e PALETTE_DATA_DIR=/app/data \
+	  -e PALETTE_HOST_DATA_DIR=$(DATA_DIR)
+
+docker-run: ## Run the container in the foreground on $(PORT) (Ctrl-C stops it)
+	@test -f .env || { echo "no .env -- cp .env.example .env and fill it in"; exit 1; }
+	@mkdir -p $(DATA_DIR)
+	$(DOCKER) run --rm $(DOCKER_RUN_ARGS) palette
+
+docker-up: ## Start the container in the background (restarts on its own); replaces a running one
+	@test -f .env || { echo "no .env -- cp .env.example .env and fill it in"; exit 1; }
+	@mkdir -p $(DATA_DIR)
+	@$(DOCKER) rm -f $(NAME) >/dev/null 2>&1 || true
+	$(DOCKER) run -d --restart unless-stopped $(DOCKER_RUN_ARGS) palette
+	@for i in $$(seq 1 30); do curl -sf localhost:$(PORT)/health >/dev/null && break; sleep 1; done
+	@$(MAKE) --no-print-directory docker-status
+
+docker-down: ## Stop and remove the container (data in $(DATA_DIR) is kept)
+	-$(DOCKER) rm -f $(NAME)
+
+docker-logs: ## Follow the container log
+	$(DOCKER) logs -f $(NAME)
+
+docker-status: ## Is it up? Where is everything?
+	@if curl -sf localhost:$(PORT)/health >/dev/null; then \
+	  echo "Palette     http://localhost:$(PORT)"; \
+	  $(MAKE) --no-print-directory stats-url; \
+	else echo "Palette is not answering on port $(PORT)  (make docker-up / make docker-logs)"; fi
+	@echo "Database    $(DATA_DIR)/usage.db"
+	@echo "Decks       $(DATA_DIR)/decks/<date>/<time>Z-<id>-<title>/"
+
+stats-url: ## Print the usage-dashboard URL (token from ./.env)
+	@tok=$$(sed -n 's/^PALETTE_STATS_TOKEN=//p' .env 2>/dev/null | tail -1); \
+	if [ -n "$$tok" ]; then echo "Dashboard   http://localhost:$(PORT)/stats?token=$$tok"; \
+	else echo "Dashboard   off -- set PALETTE_STATS_TOKEN in .env, then make docker-up"; fi
 
 # --- IBM Code Engine (linux/amd64) ---
 
@@ -109,8 +153,8 @@ hf-publish: ## HF Space: create/update (ARGS=--yes to overwrite our files, --pub
 	$(PY) deployment/hf-space/publish.py $(HF_SPACE) $(ARGS)
 
 hf-local: ## HF Space: build and run the proxy locally on http://localhost:7860
-	docker build -t palette-hf-space deployment/hf-space
-	docker run --rm -p 7860:7860 palette-hf-space
+	$(DOCKER) build -t palette-hf-space deployment/hf-space
+	$(DOCKER) run --rm -p 7860:7860 palette-hf-space
 
 # --- Local service ---
 # Run Palette as a background service on this machine. `serve-start` picks the

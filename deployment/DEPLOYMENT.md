@@ -145,9 +145,18 @@ Full guide: [`hf-space/DEPLOY.md`](./hf-space/DEPLOY.md).
   not wired in yet.
 - **Sizing.** 4 vCPU / 8 GB (raised from 2 / 4 on 2026-09-28 for several
   concurrent builds: LibreOffice rendering and PDF previews are CPU-bound).
-  `min-scale=1` avoids cold starts (the image is ~450 MB compressed). The GPU
-  fleet, not this app, limits concurrency — ~5 decks at once on the H100 (fp8); see
-  palette-model-fleet `ARCHITECTURE.md` §3.
+  `min-scale=1` avoids cold starts (the image is ~450 MB compressed). With
+  designer/coder on the GPU fleet, the fleet limits concurrency — ~5 decks at
+  once on the H100 (fp8); see palette-model-fleet `ARCHITECTURE.md` §3.
+- **Build cap and queue.** The app runs at most `PALETTE_MAX_CONCURRENT_BUILDS`
+  (default 16) builds at once; the rest queue first-come and their users see
+  "queued — #N in line". `/health` → `builds` shows `running` / `queued` /
+  `limit`. On a fleet backend, set the cap to what the fleet sustains (~5 on
+  one H100). All-RITS stress test, 2026-11-02 (8-vCPU VM, before the cap):
+  32 concurrent decks all succeeded; ~145 s per deck when unqueued (~250 s
+  with a layout-repair pass); throughput plateaued at ~130 decks/hr because
+  Python's default 12-thread pool queued everything past 12 builds —
+  `PALETTE_WORKER_THREADS` (default 64) removes that limit.
 - **One instance only.** Sessions live in memory and the UI polls for results;
   Code Engine has no session affinity, so `CE_MAX_SCALE` > 1 breaks polling
   until session state is stored outside the instance.

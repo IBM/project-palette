@@ -169,8 +169,9 @@ class TestModeSelection:
         """A container only sees what is passed with -e. Dropping the CE vars
         would silently route designer/coder back to RITS."""
         env_file = tmp_path / "env"
+        data_dir = tmp_path / "data"
         env_file.write_text("RITS_API_KEY=r\nPALETTE_CE_BASE_URL=http://lb/v1\n"
-                            "PALETTE_CE_API_KEY=k\nUNRELATED=x\n")
+                            f"PALETTE_CE_API_KEY=k\nUNRELATED=x\nPALETTE_DATA_DIR={data_dir}\n")
         cfg = service.resolve_config(home=checkout, env_file=env_file,
                                      state_dir=tmp_path / "state")
         monkeypatch.setattr(service, "container_runtime", lambda: "docker")
@@ -189,6 +190,10 @@ class TestModeSelection:
                          "PALETTE_CE_API_KEY=k"):
             assert expected in run_cmd
         assert not any(arg.startswith("UNRELATED=") for arg in run_cmd)
+        # Usage stats + archived decks live on the host, bind-mounted in.
+        assert f"{data_dir}:/app/data" in run_cmd
+        assert "PALETTE_DATA_DIR=/app/data" in run_cmd
+        assert data_dir.is_dir()
 
 
 # -- failure messages ------------------------------------------------------
